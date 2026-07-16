@@ -1,25 +1,20 @@
 import 'dotenv/config';
 
 const bool = (value: string | undefined, fallback: boolean) => value === undefined ? fallback : value === 'true';
-const sabrePcc = (process.env.SABRE_PCC ?? 'S5OM').toUpperCase();
-const sabreOauthVersion = process.env.SABRE_OAUTH_VERSION ?? 'v2';
-
-if (sabrePcc === 'S50M') throw new Error('Invalid Sabre hackathon PCC S50M. Use S5OM with the uppercase letter O.');
-if (!/^[A-Z0-9]{4}$/.test(sabrePcc)) throw new Error('SABRE_PCC must be a four-character uppercase Sabre PCC.');
-if (sabreOauthVersion !== 'v2' && sabreOauthVersion !== 'v3') throw new Error('SABRE_OAUTH_VERSION must be v2 or v3.');
 
 export const config = {
   port: Number(process.env.PORT ?? 8787),
   clientOrigin: process.env.CLIENT_ORIGIN ?? 'http://localhost:5173',
   mockMode: bool(process.env.MOCK_MODE, true),
   sabre: {
-    // OAuth v2 Test credentials are shown in Dev Studio as User ID / Password.
-    // The old CLIENT_* aliases remain supported for existing local setups.
-    eprUsername: process.env.SABRE_EPR_USERNAME ?? process.env.SABRE_CLIENT_ID,
-    eprPassword: process.env.SABRE_EPR_PASSWORD ?? process.env.SABRE_CLIENT_SECRET,
+    authVersion: process.env.SABRE_AUTH_VERSION ?? 'v3',
+    clientId: process.env.SABRE_CLIENT_ID,
+    clientSecret: process.env.SABRE_CLIENT_SECRET,
+    v2UserId: process.env.SABRE_V2_USER_ID,
+    v2Password: process.env.SABRE_V2_PASSWORD,
+    v2Pcc: process.env.SABRE_V2_PCC ?? 'S5OM',
+    v2Domain: process.env.SABRE_V2_DOMAIN ?? 'EXT',
     baseUrl: process.env.SABRE_BASE_URL ?? 'https://api.cert.platform.sabre.com',
-    pcc: sabrePcc,
-    oauthVersion: sabreOauthVersion,
   },
   paypal: {
     clientId: process.env.PAYPAL_CLIENT_ID,
@@ -28,11 +23,13 @@ export const config = {
   },
   vocalBridge: {
     apiKey: process.env.VOCAL_BRIDGE_API_KEY,
-    apiUrl: process.env.VOCAL_BRIDGE_API_URL ?? process.env.VOCAL_BRIDGE_BASE_URL ?? 'https://vocalbridgeai.com',
-    agentId: process.env.VOCAL_BRIDGE_AGENT_ID,
+    baseUrl: process.env.VOCAL_BRIDGE_BASE_URL,
   },
   landingAi: {
     apiKey: process.env.LANDING_AI_API_KEY,
     endpoint: process.env.LANDING_AI_ENDPOINT,
+  },
+  googlePlaces: {
+    apiKey: process.env.GOOGLE_PLACES_API_KEY,
   },
 };

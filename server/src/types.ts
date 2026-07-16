@@ -27,6 +27,27 @@ export interface GroupPreference {
   explanation: string;
 }
 
+export interface PreferenceCall {
+  travelerId: string;
+  name: string;
+  phone: string;
+  status: 'completed' | 'queued';
+  summary: string;
+  happiness: number;
+  topPriorities: string[];
+  compromise: string;
+}
+
+export interface PreferenceCollection {
+  adminName: string;
+  adminWeight: number;
+  source: 'mock' | 'vocal-bridge';
+  calls: PreferenceCall[];
+  negotiation: string;
+  approvalSummary: string;
+  status?: 'pending' | 'approved';
+}
+
 export interface Flight {
   id: string;
   airline: string;
@@ -112,6 +133,7 @@ export interface Trip {
   travelDna: TravelDna;
   events: TripEvent[];
   progress: number;
+  preferenceCollection?: PreferenceCollection;
 }
 
 export interface PaymentOrder {
