@@ -1,23 +1,40 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowRight, BatteryLow, Bot, CalendarDays, Camera, Check, CheckCircle2, ChevronRight,
   CircleOff, CloudRain, CreditCard, Footprints, Headphones, Hotel as HotelIcon, Landmark,
-  Map, MapPinned, Mic, Plane, PlaneLanding, RefreshCw, Route, ScanLine, Sparkles, TrainFront,
+  Map, MapPinned, Mic, Plane, PlaneLanding, Route, ScanLine, Sparkles, TrainFront,
   Utensils, WalletCards, Zap,
 } from 'lucide-react';
 import { api } from './api';
-import { useAIAgent, useAgentActions, useTranscript, useVocalBridge } from '@vocalbridgeai/react';
-import type { AgentRunStatus, AgentSystem, ItineraryItem, ItemCategory, PaymentOrder, ReplanType, SpecialistAgentId, Trip } from './types';
+import type { Interest, ItineraryItem, ItemCategory, PaymentOrder, ReplanType, Trip } from './types';
+import { useAgentActions, useTranscript, useVocalBridge } from '@vocalbridgeai/react';
+import { BookingExperience } from './components/BookingExperience';
+import { NegotiationExperience } from './components/NegotiationExperience';
+import { TravelDnaPanel } from './components/TravelDnaPanel';
+import { TravelerFitOverview } from './components/TravelerFitOverview';
+import { GoogleDayMap } from './components/GoogleDayMap';
+import { DecisionStudio } from './components/DecisionStudio';
+import { WeatherCard } from './components/WeatherCard';
+import { ExpenseLedger } from './components/ExpenseLedger';
+import { DisruptionDemo } from './components/DisruptionDemo';
 
-type Page = 'home' | 'planner' | 'agents' | 'map' | 'operations' | 'checkout';
+type Page = 'home' | 'planner' | 'checkout' | 'live' | 'expenses' | 'dna';
+let voiceActiveDay = 1;
+let voiceNavigate: (page: Page) => void = () => undefined;
+let voiceSetActiveDay: (day: number) => void = () => undefined;
+const isE164Phone = (value: string) => /^\+[1-9]\d{7,14}$/.test(value);
+const toE164Phone = (value?: string) => {
+  const digits = value?.replace(/\D/g, '') ?? '';
+  return digits ? `+${digits}` : '';
+};
 
 const nav: { id: Page; label: string; icon: typeof Map }[] = [
   { id: 'home', label: 'Trip dashboard', icon: Map },
-  { id: 'planner', label: 'Voice planner', icon: Mic },
-  { id: 'agents', label: 'Agent network', icon: Bot },
-  { id: 'map', label: 'Journey map', icon: Route },
-  { id: 'operations', label: 'Operations center', icon: Zap },
-  { id: 'checkout', label: 'Booking & checkout', icon: CreditCard },
+  { id: 'planner', label: 'Plan together', icon: Mic },
+  { id: 'live', label: 'Live itinerary', icon: Route },
+  { id: 'checkout', label: 'Book & split', icon: CreditCard },
+  { id: 'expenses', label: 'Shared expenses', icon: WalletCards },
+  { id: 'dna', label: 'Travel memory', icon: Sparkles },
 ];
 
 const categoryMeta: Record<ItemCategory, { icon: typeof Landmark; label: string; color: string }> = {
@@ -50,8 +67,9 @@ function StarRow({ value }: { value: number }) {
 }
 
 function DayPills({ trip, activeDay, setActiveDay }: { trip: Trip; activeDay: number; setActiveDay: (day: number) => void }) {
+  const dayCount = Math.min(14, Math.max(1, Math.round(trip.request.duration) || 1));
   return <div className="flex flex-wrap gap-2">
-    {Array.from({ length: trip.request.duration }, (_, index) => index + 1).map((day) => (
+    {Array.from({ length: dayCount }, (_, index) => index + 1).map((day) => (
       <button key={day} onClick={() => setActiveDay(day)} className={`rounded-full px-3.5 py-2 text-xs font-semibold transition ${activeDay === day ? 'bg-ink text-white shadow-md shadow-ink/20' : 'bg-white text-stone-500 ring-1 ring-stone-200 hover:text-ink'}`}>Day {day}</button>
     ))}
   </div>;
@@ -60,13 +78,14 @@ function DayPills({ trip, activeDay, setActiveDay }: { trip: Trip; activeDay: nu
 function RouteMap({ trip, activeDay, onSelect }: { trip: Trip; activeDay: number; onSelect: (item: ItineraryItem) => void }) {
   const allItems = trip.itinerary.filter((item) => item.day === activeDay);
   const points = allItems.map((item) => `${item.location.x},${item.location.y}`).join(' ');
-  return <div className="paper-grid relative min-h-[360px] overflow-hidden rounded-[28px] border border-[#d9ded8] bg-[#e9f0ec]">
+  if (import.meta.env.VITE_GOOGLE_MAPS_API_KEY) return <GoogleDayMap trip={trip} activeDay={activeDay} onSelect={onSelect} />;
+  return <><div className="paper-grid relative min-h-[360px] overflow-hidden rounded-[28px] border border-[#d9ded8] bg-[#e9f0ec]">
     <div className="absolute -left-10 top-7 h-48 w-72 rotate-[-10deg] rounded-[50%] bg-[#c4d8c8] opacity-65" />
     <div className="absolute -right-16 bottom-0 h-72 w-80 rotate-[20deg] rounded-[45%] bg-[#c6d9c6] opacity-70" />
     <div className="absolute left-[11%] top-[19%] h-[2px] w-[79%] rotate-[12deg] bg-white/70" />
     <div className="absolute left-[3%] top-[66%] h-[2px] w-[86%] rotate-[-21deg] bg-white/70" />
-    <span className="absolute left-5 top-5 rounded-full bg-white/75 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.16em] text-moss">Japan journey route</span>
-    <span className="absolute bottom-5 left-5 text-xs font-semibold tracking-wide text-moss/70">TOKYO → KYOTO</span>
+    <span className="absolute left-5 top-5 rounded-full bg-white/75 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.16em] text-moss">{trip.request.destination} journey route</span>
+    <span className="absolute bottom-5 left-5 text-xs font-semibold uppercase tracking-wide text-moss/70">Day {activeDay} · {trip.request.destination}</span>
     <svg className="absolute inset-0 h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none" aria-label={`Optimized itinerary path for day ${activeDay}`}>
       <polyline points={points} fill="none" stroke="#245B4F" strokeWidth="0.7" strokeLinecap="round" strokeLinejoin="round" strokeDasharray="2.2 1.6" className="animate-pulseRoute" />
     </svg>
@@ -77,95 +96,305 @@ function RouteMap({ trip, activeDay, onSelect }: { trip: Trip; activeDay: number
         <span className="pointer-events-none absolute left-5 top-1/2 hidden w-32 -translate-y-1/2 rounded-lg bg-ink px-2.5 py-2 text-[10px] font-semibold leading-tight text-white shadow-xl group-hover:block"><span className="block text-white/60">{meta.label} · {item.time}</span>{item.title}</span>
       </button>;
     })}
-  </div>;
+  </div><LiveGoogleMap trip={trip} activeDay={activeDay} /></>;
 }
 
-function Timeline({ items, compact = false }: { items: ItineraryItem[]; compact?: boolean }) {
+function LiveGoogleMap({ trip, activeDay }: { trip: Trip; activeDay: number }) {
+  const key = import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string | undefined;
+  if (!key || key.includes('PASTE_YOUR') || key.includes('your_key')) return null;
+  const stops = trip.itinerary.filter((item) => item.day === activeDay).sort((a, b) => a.time.localeCompare(b.time));
+  const routeAnchor = trip.request.destination.toLowerCase() === 'japan' ? 'Tokyo, Japan' : trip.request.destination;
+  // Google geocodes complete stop names much more reliably than the abbreviated
+  // labels shown in the itinerary (for example, "Asakusa · Tokyo").
+  const locationFor = (item: ItineraryItem) => {
+    const label = item.subtitle.replace(/\s*·\s*/g, ', ').replace(/\s*→\s*/g, ' to ');
+    // Demo hotel labels such as "Central Japan" are not geocodable route
+    // endpoints. Anchor them to the actual destination city instead.
+    if (/^(central|downtown)\s+/i.test(label) || /city center/i.test(label)) return `${item.title}, ${routeAnchor}`;
+    return `${item.title}, ${label}, ${routeAnchor}`;
+  };
+  const locations = stops.map(locationFor);
+  const uniqueLocations = [...new Set(locations.map((location) => location.trim().toLowerCase()))];
+  const origin = locations[0] ?? trip.request.destination;
+  const destination = locations[locations.length - 1] ?? trip.request.destination;
+  const waypoints = locations.slice(1, -1).join('|');
+  const waypointQuery = waypoints ? `&waypoints=${encodeURIComponent(waypoints)}` : '';
+  const src = locations.length < 2 || uniqueLocations.length < 2
+    ? `https://www.google.com/maps/embed/v1/place?key=${encodeURIComponent(key)}&q=${encodeURIComponent(origin)}`
+    : `https://www.google.com/maps/embed/v1/directions?key=${encodeURIComponent(key)}&origin=${encodeURIComponent(origin)}&destination=${encodeURIComponent(destination)}${waypointQuery}&mode=driving`;
+  const mapsUrl = `https://www.google.com/maps/dir/${locations.map(encodeURIComponent).join('/')}`;
+  const totalTransit = stops.reduce((sum, item) => sum + item.travelMins, 0);
+  return <section className="overflow-hidden rounded-[28px] border border-stone-200 bg-white"><div className="flex items-center justify-between gap-3 px-5 py-4"><div><p className="eyebrow">Interactive day route</p><h3 className="mt-1 text-lg font-bold text-ink">Day {activeDay} · {trip.request.destination}</h3><p className="mt-1 text-xs text-stone-500">{stops.length} planned stops · {totalTransit} min estimated transit</p></div><a href={mapsUrl} target="_blank" rel="noreferrer" className="text-xs font-bold text-moss hover:text-ink">Open full map ↗</a></div><iframe title={`Google Maps itinerary for day ${activeDay} in ${trip.request.destination}`} src={src} className="h-80 w-full border-0" loading="lazy" referrerPolicy="strict-origin-when-cross-origin" allowFullScreen /><div className="border-t border-stone-100 bg-[#fafbf9] px-5 py-4"><p className="text-[10px] font-bold uppercase tracking-[0.14em] text-stone-400">Route order</p><ol className="mt-3 grid gap-2 sm:grid-cols-2">{stops.map((stop, index) => <li className="flex min-w-0 items-center gap-2 text-xs" key={stop.id}><span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-moss text-[10px] font-bold text-white">{index + 1}</span><span className="truncate font-semibold text-ink">{stop.time} · {stop.title}</span>{index < stops.length - 1 && <span className="ml-auto shrink-0 text-[10px] text-stone-400">→ {stops[index + 1].travelMins}m</span>}</li>)}</ol></div></section>;
+}
+
+function Timeline({ items, compact = false, onProgress }: { items: ItineraryItem[]; compact?: boolean; onProgress?: (item: ItineraryItem, action: 'complete' | 'restore') => void }) {
   return <div className={`relative ${compact ? 'space-y-3' : 'space-y-1'}`}>
     <div className="absolute bottom-4 left-[1.15rem] top-4 w-px bg-stone-200" />
     {items.map((item) => <div className="relative flex gap-3 py-2" key={item.id}>
       <div className="w-10 pt-2 text-right text-[11px] font-bold text-stone-400">{item.time}</div>
       <div className={`relative z-10 mt-1.5 h-3 w-3 shrink-0 rounded-full ring-4 ${item.status === 'completed' ? 'bg-moss ring-emerald-100' : item.status === 'current' ? 'bg-coral ring-orange-100' : item.status === 'moved' ? 'bg-amber-400 ring-amber-100' : 'bg-white ring-stone-200'}`} />
       <div className={`min-w-0 flex-1 rounded-2xl px-3 py-2.5 ${item.status === 'current' ? 'bg-[#fff2ed] ring-1 ring-orange-100' : item.status === 'moved' ? 'bg-amber-50 ring-1 ring-amber-100' : 'hover:bg-stone-50'}`}>
-        <div className="flex items-center gap-2"><IconBadge category={item.category} /><div className="min-w-0"><div className="flex items-center gap-2"><p className="truncate text-sm font-bold text-ink">{item.title}</p>{item.status === 'moved' && <span className="rounded-full bg-amber-200 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-amber-800">Updated</span>}</div><p className="truncate text-xs text-stone-500">{item.subtitle} · {item.durationMins} min</p></div></div>
+        <div className="flex flex-wrap items-center gap-2"><IconBadge category={item.category} /><div className="min-w-0 flex-1"><div className="flex items-center gap-2"><p className={`truncate text-sm font-bold ${item.status === 'completed' ? 'text-stone-400 line-through' : 'text-ink'}`}>{item.title}</p>{item.status === 'moved' && <span className="rounded-full bg-amber-200 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-amber-800">Updated</span>}{item.status === 'skipped' && <span className="rounded-full bg-stone-200 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-stone-600">Skipped</span>}</div><p className="truncate text-xs text-stone-500">{item.subtitle} · {item.durationMins} min</p></div>{!['stay', 'transport'].includes(item.category) && <button onClick={() => { const action = item.status === 'completed' ? 'restore' : 'complete'; if (onProgress) onProgress(item, action); else window.dispatchEvent(new CustomEvent('journeyos-progress', { detail: { id: item.id, title: item.title, action } })); }} className={`shrink-0 rounded-lg px-3 py-2 text-[10px] font-bold ${item.status === 'completed' ? 'bg-stone-100 text-stone-600 hover:bg-stone-200' : 'bg-[#eff6f1] text-moss hover:bg-emerald-100'}`}>{item.status === 'completed' ? 'Undo done' : 'Mark done'}</button>}</div>
       </div>
     </div>)}
   </div>;
 }
 
-function TripOverview({ trip, setPage, activeDay, setActiveDay, onReceipt }: { trip: Trip; setPage: (page: Page) => void; activeDay: number; setActiveDay: (day: number) => void; onReceipt: () => void }) {
-  const dayItems = trip.itinerary.filter((item) => item.day === activeDay);
+function TripOverview({ trip, setPage, activeDay, setActiveDay, onReceipt, onReset }: { trip: Trip; setPage: (page: Page) => void; activeDay: number; setActiveDay: (day: number) => void; onReceipt: () => void; onReset: () => void }) {
+  if (!trip.briefTranscript) return <section className="relative overflow-hidden rounded-[32px] bg-ink px-7 py-10 text-white shadow-glow sm:px-10"><div className="relative z-10 max-w-2xl"><p className="eyebrow text-emerald-200">Start a shared trip</p><h1 className="mt-2 font-display text-4xl leading-none sm:text-5xl">Bring your friends into one plan.</h1><p className="mt-5 max-w-xl text-sm leading-6 text-white/70">JourneyOS starts with no assumed group. Use the Voice button to describe the destination, dates, budget, and how many friends are traveling—or open Plan to write the brief.</p><div className="mt-7 flex flex-wrap gap-3"><button onClick={() => setPage('planner')} className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2.5 text-xs font-bold text-ink transition hover:bg-emerald-50"><Sparkles size={15} />Create trip brief</button><button onClick={() => setPage('planner')} className="inline-flex items-center gap-2 rounded-full border border-white/20 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-white/10"><Mic size={15} />Talk to JourneyOS</button></div></div><div className="absolute -right-9 -top-10 h-52 w-52 rounded-full border-[22px] border-emerald-300/15" /><div className="absolute bottom-[-72px] right-24 h-48 w-48 rounded-full bg-coral/90 blur-[2px]" /></section>;
+  const dayItems = trip.itinerary.filter((item) => item.day === activeDay).sort((left, right) => left.time.localeCompare(right.time));
+  const activeLocationParts = dayItems[0]?.subtitle.split('·') ?? [];
+  const activeCity = activeLocationParts[activeLocationParts.length - 1]?.trim() || trip.request.destination;
   const budgetPercent = Math.min(100, (trip.budget.spent / trip.budget.total) * 100);
   return <div className="space-y-6">
     <section className="relative overflow-hidden rounded-[32px] bg-ink px-7 py-8 text-white shadow-glow sm:px-10">
-      <div className="relative z-10 max-w-xl"><div className="mb-5 inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold text-emerald-100"><span className="h-2 w-2 rounded-full bg-[#8fe0b7]" /> Live trip command center</div><h1 className="font-display text-4xl leading-none sm:text-5xl">Japan, together.</h1><p className="mt-4 max-w-md text-sm leading-6 text-white/70">One conversation turned into a route built around every person, with the room to change when travel does.</p><div className="mt-7 flex flex-wrap gap-3"><button onClick={() => setPage('map')} className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2.5 text-xs font-bold text-ink transition hover:bg-emerald-50"><MapPinned size={15} /> Explore the route</button><button onClick={() => setPage('operations')} className="inline-flex items-center gap-2 rounded-full border border-white/20 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-white/10"><Zap size={15} /> Test a disruption</button></div></div>
+      <div className="relative z-10 max-w-xl"><div className="mb-5 inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold text-emerald-100"><span className="h-2 w-2 rounded-full bg-[#8fe0b7]" /> Live trip command center</div><h1 className="font-display text-4xl leading-none sm:text-5xl">{trip.name}</h1><p className="mt-4 max-w-md text-sm leading-6 text-white/70">One conversation turned into a route built around every person, with the room to change when travel does.</p><div className="mt-7 flex flex-wrap gap-3"><button onClick={() => setPage('live')} className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2.5 text-xs font-bold text-ink transition hover:bg-emerald-50"><MapPinned size={15} /> Open Live trip</button><button onClick={() => setPage('dna')} className="inline-flex items-center gap-2 rounded-full border border-white/20 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-white/10"><Sparkles size={15} /> See what we learned</button><button onClick={onReset} className="inline-flex items-center gap-2 rounded-full border border-white/20 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-white/10">Reset demo</button></div></div>
       <div className="absolute -right-9 -top-10 h-52 w-52 rounded-full border-[22px] border-emerald-300/15" /><div className="absolute bottom-[-72px] right-24 h-48 w-48 rounded-full bg-coral/90 blur-[2px]" /><div className="absolute bottom-14 right-12 h-8 w-8 rounded-full bg-amber-200 animate-drift" />
     </section>
     <section className="grid gap-4 xl:grid-cols-[1.45fr_0.9fr]">
       <div className="rounded-[28px] border border-stone-200 bg-white p-5 sm:p-6"><div className="flex flex-wrap items-center justify-between gap-4"><div><p className="eyebrow">Today · Day {activeDay}</p><h2 className="mt-1 text-xl font-bold text-ink">The route has a little magic in it.</h2></div><DayPills trip={trip} activeDay={activeDay} setActiveDay={setActiveDay} /></div><div className="mt-5"><Timeline items={dayItems} /></div></div>
-      <div className="rounded-[28px] border border-stone-200 bg-[#fafbf9] p-5 sm:p-6"><div className="flex items-center justify-between"><div><p className="eyebrow">Live route</p><h2 className="mt-1 text-xl font-bold text-ink">Less backtracking.</h2></div><button onClick={() => setPage('map')} aria-label="Open full journey map" className="grid h-9 w-9 place-items-center rounded-xl bg-moss text-white"><ArrowRight size={17} /></button></div><div className="mt-5"><RouteMap trip={trip} activeDay={activeDay} onSelect={() => setPage('map')} /></div><div className="mt-4 flex items-center justify-between text-xs text-stone-500"><span>{dayItems.reduce((sum, item) => sum + item.travelMins, 0)} min transit</span><span className="font-bold text-moss">Optimized for daylight</span></div></div>
+      <div className="rounded-[28px] border border-stone-200 bg-[#fafbf9] p-5 sm:p-6"><div className="flex items-center justify-between"><div><p className="eyebrow">Live route</p><h2 className="mt-1 text-xl font-bold text-ink">Less backtracking.</h2></div><button onClick={() => setPage('live')} aria-label="Open full journey map" className="grid h-9 w-9 place-items-center rounded-xl bg-moss text-white"><ArrowRight size={17} /></button></div><div className="mt-5"><RouteMap trip={trip} activeDay={activeDay} onSelect={() => setPage('live')} /></div><div className="mt-4 flex items-center justify-between text-xs text-stone-500"><span>{dayItems.reduce((sum, item) => sum + item.travelMins, 0)} min transit</span><span className="font-bold text-moss">Optimized for daylight</span></div></div>
     </section>
     <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-      <article className="rounded-3xl border border-stone-200 bg-white p-5"><div className="flex items-center justify-between"><span className="text-sm font-bold text-ink">Trip progress</span><CheckCircle2 className="text-moss" size={19} /></div><p className="mt-4 text-3xl font-bold text-ink">{trip.progress}%</p><div className="mt-3 h-2 overflow-hidden rounded-full bg-stone-100"><div className="h-full rounded-full bg-moss" style={{ width: `${trip.progress}%` }} /></div><p className="mt-3 text-xs text-stone-500">3 moments complete · 9 ahead</p></article>
+      <article className="rounded-3xl border border-stone-200 bg-white p-5"><div className="flex items-center justify-between"><span className="text-sm font-bold text-ink">Trip progress</span><CheckCircle2 className="text-moss" size={19} /></div><p className="mt-4 text-3xl font-bold text-ink">{trip.progress}%</p><div className="mt-3 h-2 overflow-hidden rounded-full bg-stone-100"><div className="h-full rounded-full bg-moss" style={{ width: `${trip.progress}%` }} /></div><p className="mt-3 text-xs text-stone-500">{trip.progressState?.completedStopIds.length ?? trip.itinerary.filter((item) => item.status === 'completed').length} complete · {trip.progressState?.skippedStopIds.length ?? 0} skipped · {trip.progressState?.scheduleVarianceMins ?? 0} min variance</p></article>
       <article className="rounded-3xl border border-stone-200 bg-white p-5"><div className="flex items-center justify-between"><span className="text-sm font-bold text-ink">Trip budget</span><WalletCards className="text-coral" size={19} /></div><p className="mt-4 text-3xl font-bold text-ink">{money(trip.budget.remaining)}</p><div className="mt-3 h-2 overflow-hidden rounded-full bg-stone-100"><div className="h-full rounded-full bg-coral" style={{ width: `${budgetPercent}%` }} /></div><p className="mt-3 text-xs text-stone-500">{money(trip.budget.spent)} planned of {money(trip.budget.total)}</p></article>
-      <article className="rounded-3xl border border-stone-200 bg-white p-5"><div className="flex items-center justify-between"><span className="text-sm font-bold text-ink">Weather aware</span><CloudRain className="text-sky-500" size={19} /></div><p className="mt-4 text-2xl font-bold text-ink">24° · Clear</p><p className="mt-3 text-xs leading-5 text-stone-500">Tomorrow’s outdoor windows are safely held.</p></article>
+      <WeatherCard destination={trip.request.destination} />
       <button onClick={onReceipt} className="group rounded-3xl border border-dashed border-moss/40 bg-[#eff6f1] p-5 text-left transition hover:border-moss hover:bg-[#e8f2eb]"><div className="flex items-center justify-between"><span className="text-sm font-bold text-ink">Receipt AI</span><ScanLine className="text-moss" size={19} /></div><p className="mt-4 text-base font-bold text-ink">Scan Sushi Dai receipt</p><p className="mt-2 text-xs leading-5 text-stone-500">Adds a sample $120 dinner to your live budget.</p></button>
     </section>
   </div>;
 }
 
-function VoicePlanner({ trip, onTrip, setPage }: { trip: Trip; onTrip: (trip: Trip, note: string) => void; setPage: (page: Page) => void }) {
-  const sampleVoiceCommand = 'Plan a 5-day Japan trip for four people under $6,000. We love temples, food, history, and photography.';
-  const [conversation, setConversation] = useState(sampleVoiceCommand);
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<{ confidence: number; source: string; summary: string } | null>(null);
-  const { state, connect, disconnect, isMicrophoneEnabled, toggleMicrophone, agentMode, error } = useVocalBridge();
-  const { transcript, clear } = useTranscript();
-  const { onAction, sendAction } = useAgentActions();
-  const connected = state === 'connected';
-  const changingConnection = state === 'connecting' || state === 'waiting_for_agent';
+function FriendSetup({ trip, onTrip }: { trip: Trip; onTrip: (trip: Trip, note: string) => void }) {
+  const [drafts, setDrafts] = useState(() => trip.travelers.map((friend) => ({ id: friend.id, name: friend.name, phone: toE164Phone(friend.phone), pacePreference: friend.pacePreference, foodPreference: friend.foodPreference, interests: friend.interests })));
+  const [saving, setSaving] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [newPhone, setNewPhone] = useState('');
+  const [adding, setAdding] = useState(false);
+  const rosterKey = trip.travelers.map((friend) => `${friend.id}:${friend.name}:${friend.phone ?? ''}`).join('|');
+  useEffect(() => { setDrafts(trip.travelers.map((friend) => ({ id: friend.id, name: friend.name, phone: toE164Phone(friend.phone), pacePreference: friend.pacePreference, foodPreference: friend.foodPreference, interests: friend.interests }))); }, [rosterKey]);
+  useEffect(() => {
+    document.querySelectorAll<HTMLInputElement>('.friend-setup input[placeholder="+1 415 555 0101"], .friend-setup input[placeholder="Phone (optional)"]').forEach((field) => {
+      field.required = true;
+      field.pattern = '\\+[1-9][0-9]{7,14}';
+      field.placeholder = '+14155550101';
+      field.title = 'Use E.164 format, for example +14155550101';
+    });
+  }, [drafts.length]);
+  const save = async () => {
+    if (drafts.some((friend) => friend.name.trim().length < 2)) { onTrip(trip, 'Add a name for every traveler before continuing.'); return; }
+    if (drafts.some((friend) => !isE164Phone(friend.phone))) { document.querySelector<HTMLInputElement>('.friend-setup input:invalid')?.reportValidity(); return; }
+    setSaving(true);
+    try {
+      let updated = trip;
+      for (const friend of drafts) {
+        const response = await api.mutateTraveler({ action: 'update', id: friend.id, name: friend.name.trim(), phone: friend.phone.trim() || undefined }, updated);
+        updated = response.trip;
+      }
+      onTrip(updated, 'Friends saved. Phone numbers are ready for preference calls when you choose to collect them.');
+    } catch (error) { onTrip(trip, error instanceof Error ? error.message : 'Could not save your friends.'); }
+    finally { setSaving(false); }
+  };
+  const addFriend = async () => {
+    if (newName.trim().length < 2) { onTrip(trip, 'Enter a name to add a friend.'); return; }
+    if (!isE164Phone(newPhone)) { document.querySelector<HTMLInputElement>('.friend-setup input:invalid')?.reportValidity(); return; }
+    setAdding(true);
+    try {
+      const response = await api.mutateTraveler({ action: 'add', name: newName.trim(), phone: newPhone.trim() || undefined }, trip);
+      setNewName('');
+      setNewPhone('');
+      onTrip(response.trip, `${newName.trim()} was added. Their preferences can be collected when you start group calls.`);
+    } catch (error) { onTrip(trip, error instanceof Error ? error.message : 'Could not add this friend.'); }
+    finally { setAdding(false); }
+  };
+  const callFor = (id: string) => trip.preferenceCollection?.calls.find((call) => call.travelerId === id);
+  return <section className="friend-setup rounded-[32px] border border-moss/20 bg-[#f6fbf7] p-6 xl:col-span-2"><div className="flex flex-wrap items-start justify-between gap-4"><div><p className="eyebrow text-moss">Friends</p><h2 className="mt-1 text-2xl font-bold text-ink">You + {Math.max(0, drafts.length - 1)} friend{drafts.length === 2 ? '' : 's'}.</h2><p className="mt-2 max-w-2xl text-sm leading-6 text-stone-600">The first slot is always the trip admin. JourneyOS fills their preferences from the initial voice brief; every remaining slot is a friend who can be called for their own preferences.</p></div><span className="rounded-full bg-white px-3 py-1.5 text-xs font-bold text-moss ring-1 ring-moss/15">{drafts.length} travelers</span></div><div className="mt-5 grid gap-3 md:grid-cols-2">{drafts.map((friend, index) => { const call = callFor(friend.id); const isAdmin = index === 0; return <article key={friend.id} className="rounded-2xl bg-white p-4 ring-1 ring-moss/10"><div className="flex items-center justify-between gap-3"><p className="text-xs font-bold uppercase tracking-wider text-stone-400">{isAdmin ? 'Trip admin · you' : `Friend ${index}`}</p><span className={`rounded-full px-2 py-1 text-[10px] font-bold ${isAdmin ? 'bg-ink text-white' : call?.status === 'completed' ? 'bg-emerald-100 text-moss' : call?.status === 'dialing' ? 'bg-amber-100 text-amber-800' : 'bg-stone-100 text-stone-500'}`}>{isAdmin ? 'Brief captured' : call?.status === 'completed' ? 'Preferences ready' : call?.status === 'dialing' ? 'Calling…' : 'Ready to call'}</span></div><label className="mt-3 block text-xs font-bold text-stone-500">Name<input value={friend.name} onChange={(event) => setDrafts((current) => current.map((item) => item.id === friend.id ? { ...item, name: event.target.value } : item))} className="mt-1 w-full rounded-xl border border-stone-200 px-3 py-2.5 text-sm text-ink" /></label><label className="mt-3 block text-xs font-bold text-stone-500">Phone <span className="font-medium">(optional)</span><input value={friend.phone} onChange={(event) => setDrafts((current) => current.map((item) => item.id === friend.id ? { ...item, phone: event.target.value } : item))} placeholder="+1 415 555 0101" className="mt-1 w-full rounded-xl border border-stone-200 px-3 py-2.5 text-sm text-ink" /></label>{isAdmin && !call && <div className="mt-4 rounded-xl bg-[#eff6f1] p-3"><p className="text-[10px] font-extrabold uppercase tracking-wider text-moss">Preferences from your initial voice brief</p><p className="mt-1 text-xs leading-5 text-stone-700">{friend.pacePreference} pace · {friend.foodPreference}</p><p className="mt-2 text-xs font-semibold text-ink">Priorities: <span className="font-medium text-stone-600">{Object.entries(friend.interests).filter(([, score]) => score >= 5).map(([interest]) => interest).join(' · ') || 'Captured in your trip brief'}</span></p></div>}{call && <div className="mt-4 rounded-xl bg-[#fff8e9] p-3"><p className="text-[10px] font-extrabold uppercase tracking-wider text-coral">Call preference outcome</p><p className="mt-1 text-xs leading-5 text-stone-700">{call.summary}</p>{call.topPriorities.length > 0 && <p className="mt-2 text-xs font-semibold text-ink">Priorities: <span className="font-medium text-stone-600">{call.topPriorities.join(' · ')}</span></p>}{call.status === 'completed' && <p className="mt-2 text-xs font-semibold text-moss">{call.happiness}% plan fit · {call.compromise}</p>}</div>}</article>; })}</div><div className="mt-5 grid gap-2 rounded-2xl border border-dashed border-moss/35 bg-white/75 p-4 sm:grid-cols-[1fr_1fr_auto]"><input value={newName} onChange={(event) => setNewName(event.target.value)} placeholder="New friend’s name" className="rounded-xl border border-stone-200 px-3 py-2.5 text-sm text-ink" /><input value={newPhone} onChange={(event) => setNewPhone(event.target.value)} placeholder="Phone (optional)" className="rounded-xl border border-stone-200 px-3 py-2.5 text-sm text-ink" /><button onClick={() => void addFriend()} disabled={adding || newName.trim().length < 2} className="rounded-xl bg-ink px-4 py-2.5 text-sm font-bold text-white disabled:opacity-40">{adding ? 'Adding…' : 'Add friend'}</button></div><div className="mt-4 flex flex-wrap items-center gap-3"><button onClick={() => void save()} disabled={saving} className="rounded-2xl bg-moss px-5 py-3 text-sm font-bold text-white disabled:opacity-50">{saving ? 'Saving friends…' : 'Save friend details'}</button><p className="text-xs leading-5 text-stone-500">Say your name, phone number, and preferences to the Travel Mediator—or edit them here. Use <b>Collect preferences</b> for the other friends.</p></div></section>;
+}
 
-  const answerAgentQuery = useCallback(async (query: string) => {
-    const response = await api.queryAgents(query);
-    onTrip(response.trip, `Voice query delegated across ${response.agentRun.steps.length} JourneyOS agent task${response.agentRun.steps.length === 1 ? '' : 's'}.`);
-    return response.response;
-  }, [onTrip]);
-  useAIAgent({ onQuery: answerAgentQuery });
+function VoicePlanner({ trip, onTrip }: { trip: Trip; onTrip: (trip: Trip, note: string) => void }) {
+  const sampleVoiceCommand = `Plan a ${trip.request.duration}-day ${trip.request.destination} trip for ${trip.request.travelers} friends under $${trip.request.budget.toLocaleString()}. We enjoy ${trip.request.interests.join(', ')}.`;
+  const [conversation, setConversation] = useState(() => trip.briefTranscript ?? `Plan a ${trip.request.duration}-day ${trip.request.destination} trip for ${trip.request.travelers} friends under $${trip.request.budget.toLocaleString()}. We love ${trip.request.interests.join(', ')}.`);
+  const [listening, setListening] = useState(false);
+  const [speechStatus, setSpeechStatus] = useState('Tap the microphone and allow access when your browser asks.');
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<{ confidence: number; source: string; summary: string; request: Trip['request'] } | null>(null);
+  const [reviewTab, setReviewTab] = useState<'plan' | 'people'>('plan');
+  const [chunkSeconds, setChunkSeconds] = useState(0);
+  const [chunkNumber, setChunkNumber] = useState(1);
+  const [needsContinue, setNeedsContinue] = useState(false);
+  const liveVoice = useVocalBridge();
+  const { transcript } = useTranscript();
+  const { sendAction } = useAgentActions();
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const mockVoiceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const chunkTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const chunkBaseRef = useRef('');
+  const appliedVocalBriefRef = useRef('');
+  const speechSupported = typeof window !== 'undefined' && Boolean(window.SpeechRecognition || window.webkitSpeechRecognition);
+  const liveVoiceConnected = liveVoice.state === 'connected' || liveVoice.state === 'connecting' || liveVoice.state === 'waiting_for_agent';
+
+  // The persistent voice assistant can finish a mediator conversation from
+  // any page. When it creates the trip, surface the server-polished summary
+  // in this Plan-page brief rather than leaving the raw spoken transcript.
+  useEffect(() => {
+    if (!trip.briefTranscript) return;
+    setConversation(trip.briefTranscript);
+    setResult((current) => current ?? { confidence: 1, source: 'vocal-bridge', summary: trip.briefTranscript ?? '', request: trip.request });
+  }, [trip.briefTranscript, trip.request]);
 
   useEffect(() => {
-    const userTranscript = transcript.filter((entry) => entry.role === 'user').map((entry) => entry.text).join(' ').trim();
-    if (userTranscript) setConversation(userTranscript);
+    const spokenBrief = transcript.filter((entry) => entry.role === 'user').map((entry) => entry.text.trim()).filter(Boolean).join(' ');
+    if (spokenBrief) {
+      setSpeechStatus('Travel Mediator is transcribing. Your editable brief changes only after the agent finalizes it.');
+    }
   }, [transcript]);
-  useEffect(() => onAction('show_agent_network', () => setPage('agents')), [onAction, setPage]);
-  useEffect(() => onAction('show_booking_options', () => setPage('checkout')), [onAction, setPage]);
-  useEffect(() => onAction('trip_brief_ready', (payload) => {
-    if (typeof payload.conversation === 'string') setConversation(payload.conversation);
-  }), [onAction]);
 
-  const toggleSession = async () => {
-    if (state === 'disconnected') {
-      clear();
-      setConversation('');
-      await connect();
-    } else await disconnect();
+  const toggleLiveVoice = async () => {
+    try {
+      if (liveVoiceConnected) {
+        await liveVoice.toggleMicrophone();
+        setSpeechStatus(liveVoice.isMicrophoneEnabled ? 'Microphone muted. JourneyOS is still connected and will retain this trip context.' : 'Microphone on. Continue the same JourneyOS conversation.');
+        return;
+      }
+      setSpeechStatus('Connecting securely to Travel Mediator…');
+      await liveVoice.connect();
+      setSpeechStatus('Connected to Travel Mediator. It is syncing this trip before responding.');
+    } catch (error) {
+      setSpeechStatus(error instanceof Error ? error.message : 'Could not connect to Travel Mediator.');
+    }
   };
-  const createPlan = async () => {
+
+  const startListening = () => {
+    const append = needsContinue;
+    if (listening) {
+      if (recognitionRef.current) recognitionRef.current.stop();
+      if (mockVoiceTimeoutRef.current) {
+        clearTimeout(mockVoiceTimeoutRef.current);
+        mockVoiceTimeoutRef.current = null;
+        setListening(false);
+        setSpeechStatus('Mock voice capture stopped. Tap again whenever you are ready.');
+      }
+      return;
+    }
+    const Recognition = window.SpeechRecognition ?? window.webkitSpeechRecognition;
+    if (!Recognition) {
+      if (!append) setConversation('');
+      setNeedsContinue(false);
+      setChunkNumber((current) => append ? current + 1 : 1);
+      setListening(true);
+      setSpeechStatus('This preview has no microphone API, so JourneyOS is simulating a voice command…');
+      mockVoiceTimeoutRef.current = setTimeout(() => {
+        setConversation((current) => append ? `${current.trim()} ${sampleVoiceCommand}` : sampleVoiceCommand);
+        setListening(false);
+        setSpeechStatus('Mock voice captured. Review the transcript, then create the trip brief.');
+        mockVoiceTimeoutRef.current = null;
+      }, 900);
+      return;
+    }
+    const recognition = new Recognition();
+    recognitionRef.current = recognition;
+    recognition.lang = 'en-US';
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.maxAlternatives = 1;
+    recognition.onstart = () => {
+      if (!append) setConversation('');
+      chunkBaseRef.current = append ? `${conversation.trim()} ` : '';
+      setNeedsContinue(false);
+      setChunkNumber((current) => append ? current + 1 : 1);
+      setChunkSeconds(0);
+      setListening(true);
+      setSpeechStatus('Listening now — describe the trip in one natural sentence.');
+    };
+    recognition.onresult = (event) => {
+      let transcript = '';
+      for (let index = 0; index < event.results.length; index += 1) transcript += event.results[index][0]?.transcript ?? '';
+      setConversation(`${chunkBaseRef.current}${transcript}`.trim());
+      setSpeechStatus(event.results[event.results.length - 1]?.isFinal ? 'Voice captured. Review the transcript, then create the trip brief.' : 'Transcribing…');
+    };
+    recognition.onerror = (event) => {
+      const messages: Record<string, string> = {
+        'not-allowed': 'Microphone access was blocked. Allow it in the browser’s site settings and try again.',
+        'no-speech': 'No speech was detected. Try again and speak after the microphone turns coral.',
+        network: 'The browser speech service could not be reached. You can still type the request.',
+      };
+      setSpeechStatus(messages[event.error] ?? `Voice recognition stopped: ${event.error}.`);
+      setListening(false);
+    };
+    recognition.onend = () => {
+      setListening(false);
+      recognitionRef.current = null;
+      if (chunkSeconds > 0 && chunkSeconds < 45) {
+        setNeedsContinue(true);
+        setSpeechStatus('This voice segment ended. Your transcript is saved — tap the microphone to continue.');
+      }
+    };
+    try {
+      recognition.start();
+    } catch {
+      recognitionRef.current = null;
+      setListening(false);
+      setSpeechStatus('The browser could not start voice capture. Check microphone permission, then try again.');
+    }
+  };
+  useEffect(() => {
+    if (!listening || !speechSupported) return;
+    chunkTimerRef.current = setInterval(() => {
+      setChunkSeconds((seconds) => {
+        const next = seconds + 1;
+        if (next < 40) setSpeechStatus(`Part ${chunkNumber} of your brief · ${next}s of 45s`);
+        if (next === 40) setSpeechStatus('40 seconds captured. JourneyOS will pause in 5 seconds — tap the microphone to continue.');
+        if (next >= 45) {
+          recognitionRef.current?.stop();
+          setNeedsContinue(true);
+          setListening(false);
+          setSpeechStatus('Part captured. Your transcript is saved — tap the microphone to continue with the next part.');
+        }
+        return next;
+      });
+    }, 1000);
+    return () => { if (chunkTimerRef.current) clearInterval(chunkTimerRef.current); };
+  }, [chunkNumber, listening, speechSupported]);
+  useEffect(() => () => {
+    recognitionRef.current?.abort();
+    if (mockVoiceTimeoutRef.current) clearTimeout(mockVoiceTimeoutRef.current);
+    if (chunkTimerRef.current) clearInterval(chunkTimerRef.current);
+  }, []);
+  const createPlan = async (brief = conversation, fromVoice = false) => {
+    if (brief.trim().length < 3) return;
     setLoading(true);
     try {
-      const response = await api.extractPlan(conversation || sampleVoiceCommand);
+      const response = await api.extractPlan(brief);
       setResult(response);
-      onTrip(response.trip, 'Voice brief structured into a living trip plan.');
-      await sendAction('trip_plan_created', { summary: response.summary });
-    } catch (cause) { onTrip(trip, cause instanceof Error ? cause.message : 'Could not extract that trip request.'); }
+      setConversation(response.summary);
+      if (fromVoice) void sendAction('trip_plan_created', { destination: response.trip.request.destination, duration: response.trip.request.duration, travelers: response.trip.request.travelers });
+      onTrip(response.trip, fromVoice ? 'Your Vocal Bridge trip brief is now live across the dashboard, route, and booking screens.' : response.itinerarySource === 'google-places' ? 'Real attractions sourced from Google Places and mapped into your trip.' : `Curated fallback route: ${response.placesDiagnostic ?? 'Google Places did not return enough attractions.'}`);
+    } catch (error) { onTrip(trip, error instanceof Error ? error.message : 'Could not extract that trip request.'); }
     finally { setLoading(false); }
   };
-  const extracted = trip.request;
-  const statusLabel = changingConnection ? 'Connecting to your voice agent…' : connected ? 'Voice agent connected' : 'Ready for a voice session';
-  return <div className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
-    <section className="relative overflow-hidden rounded-[32px] bg-[#eff6f1] px-6 py-8 sm:px-10"><div className="relative z-10"><p className="eyebrow text-moss">Vocal Bridge live session</p><h1 className="mt-2 font-display text-4xl leading-[0.95] text-ink sm:text-5xl">Tell us where the story goes.</h1><p className="mt-4 max-w-md text-sm leading-6 text-stone-600">Speak naturally. Vocal Bridge handles the live conversation while the Journey Orchestrator delegates planning work to specialist agents.</p><div className="mt-8 flex flex-col items-center"><button type="button" onClick={() => void toggleSession()} disabled={changingConnection} aria-pressed={connected} aria-label={connected ? 'End voice session' : 'Start voice session'} className={`grid h-36 w-36 place-items-center rounded-full border-[10px] border-white shadow-xl transition disabled:cursor-wait disabled:opacity-70 ${connected ? 'bg-coral text-white animate-pulse' : 'bg-moss text-white hover:scale-105'}`}><Mic size={42} /></button><p className="mt-4 text-sm font-bold text-ink">{connected ? 'End voice session' : changingConnection ? 'Connecting…' : 'Start voice session'}</p><p role="status" aria-live="polite" className="mt-2 max-w-sm text-center text-xs leading-5 text-stone-500">{statusLabel}</p>{connected && <button type="button" onClick={() => void toggleMicrophone()} aria-pressed={!isMicrophoneEnabled} className="mt-3 rounded-full bg-white px-3 py-1.5 text-xs font-bold text-moss ring-1 ring-moss/15">{isMicrophoneEnabled ? 'Mute microphone' : 'Unmute microphone'}</button>}{error && <p role="alert" className="mt-3 max-w-sm text-center text-xs font-semibold text-coral">{error.code === 'MICROPHONE_ERROR' ? 'Microphone access was blocked. Allow it in site settings and try again.' : error.message}</p>}<p className="mt-3 text-[10px] font-bold uppercase tracking-wider text-moss/60">{__VOCAL_BRIDGE_SDK_AVAILABLE__ ? `Vocal Bridge · ${agentMode ?? 'WebRTC'}` : 'Offline fallback · install Vocal Bridge packages for WebRTC'}</p></div></div><div className="absolute -bottom-12 -right-12 h-60 w-60 rounded-full border-[24px] border-[#d3e8d8]" /></section>
-    <section className="rounded-[32px] border border-stone-200 bg-white p-6 sm:p-8"><div className="flex items-center justify-between"><div><p className="eyebrow">Live transcript</p><h2 className="mt-1 text-xl font-bold text-ink">Your travel brief</h2></div><Headphones className="text-moss" /></div>{transcript.length > 0 && <ol aria-live="polite" aria-relevant="additions" className="mt-5 max-h-48 space-y-2 overflow-y-auto rounded-2xl bg-stone-50 p-3">{transcript.map((entry, index) => <li key={`${entry.timestamp}-${index}`} className="text-xs leading-5"><b className={entry.role === 'user' ? 'text-moss' : 'text-coral'}>{entry.role === 'user' ? 'You' : 'JourneyOS'}:</b> <span className="text-stone-600">{entry.text}</span></li>)}</ol>}<label className="sr-only" htmlFor="trip-conversation">Trip request</label><textarea id="trip-conversation" value={conversation} onChange={(event) => setConversation(event.target.value)} placeholder="Your spoken request appears here…" className="mt-5 min-h-32 w-full resize-none rounded-2xl border border-stone-200 bg-stone-50 p-4 text-sm leading-6 text-ink outline-none transition focus:border-moss focus:ring-4 focus:ring-moss/10" /><div className="mt-4 flex gap-2"><button onClick={() => void createPlan()} disabled={loading || !conversation.trim()} className="inline-flex flex-1 items-center justify-center gap-2 rounded-2xl bg-ink px-4 py-3.5 text-sm font-bold text-white transition hover:bg-moss disabled:cursor-wait disabled:opacity-70"><Sparkles size={17} />{loading ? 'Understanding your trip…' : 'Create my trip brief'}</button>{transcript.length > 0 && <button type="button" onClick={clear} className="rounded-2xl bg-stone-100 px-4 text-xs font-bold text-stone-600">Clear</button>}</div>{result && <p className="mt-3 text-center text-xs font-semibold text-moss">Local trip extraction · {Math.round(result.confidence * 100)}% confidence</p>}</section>
-    <section className="rounded-[32px] border border-stone-200 bg-white p-6 xl:col-span-2"><div className="flex flex-wrap items-end justify-between gap-4"><div><p className="eyebrow">Structured output</p><h2 className="mt-1 text-xl font-bold text-ink">The agent network heard the important things.</h2></div><span className="rounded-full bg-[#eff6f1] px-3 py-1.5 text-xs font-bold text-moss">{extracted.travelStyle}</span></div><div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4"><div className="soft-stat"><span>Destination</span><strong>{extracted.destination}</strong></div><div className="soft-stat"><span>Time together</span><strong>{extracted.duration} days</strong></div><div className="soft-stat"><span>Group size</span><strong>{extracted.travelers} travelers</strong></div><div className="soft-stat"><span>Shared budget</span><strong>{money(extracted.budget)}</strong></div></div><div className="mt-5 flex flex-wrap gap-2">{extracted.interests.map((interest) => <span className="rounded-full bg-sand px-3 py-1.5 text-xs font-bold capitalize text-ink" key={interest}>{interest}</span>)}{extracted.foodPreferences.map((food) => <span className="rounded-full bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-700" key={food}>{food}</span>)}</div></section>
+  useEffect(() => {
+    const spokenBrief = transcript.filter((entry) => entry.role === 'user').map((entry) => entry.text.trim()).filter(Boolean).join(' ');
+    const finalSummary = [...transcript].reverse().find((entry) => entry.role === 'agent')?.text ?? '';
+    const agentConfirmedPlan = /(?:i(?:'m| am) planning|your trip brief is ready|here(?:'s| is) your trip)/i.test(finalSummary);
+    if (!agentConfirmedPlan || spokenBrief.length < 3 || appliedVocalBriefRef.current === spokenBrief) return;
+    appliedVocalBriefRef.current = spokenBrief;
+    void createPlan(spokenBrief, true);
+  }, [transcript]);
+  const extracted = result?.request ?? trip.request;
+  return <div className="planner-workflow grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
+    <section className="relative overflow-hidden rounded-[32px] bg-[#eff6f1] px-6 py-8 sm:px-10"><div className="relative z-10"><p className="eyebrow text-moss">Live Vocal Bridge voice</p><h1 className="mt-2 font-display text-4xl leading-[0.95] text-ink sm:text-5xl">Tell us where the story goes.</h1><p className="mt-4 max-w-md text-sm leading-6 text-stone-600">Speak naturally with the Travel Mediator. JourneyOS puts your latest spoken trip brief into the plan for review.</p><div className="mt-8 flex flex-col items-center"><button type="button" onClick={() => void toggleLiveVoice()} aria-pressed={liveVoiceConnected} aria-label={liveVoiceConnected ? 'End voice conversation' : 'Start voice conversation'} className={`grid h-36 w-36 place-items-center rounded-full border-[10px] border-white shadow-xl transition ${liveVoiceConnected ? 'bg-coral text-white animate-pulse' : 'bg-moss text-white hover:scale-105'}`}><Mic size={42} /></button><p className="mt-4 text-sm font-bold text-ink">{liveVoice.state === 'connecting' ? 'Connecting…' : liveVoiceConnected ? 'Live — tap to end voice chat' : 'Tap to talk with Travel Mediator'}</p><p className="mt-2 max-w-sm text-center text-xs leading-5 text-stone-500">{liveVoice.error?.message ?? speechStatus}</p><p className="mt-1 text-[10px] font-bold uppercase tracking-wider text-moss/60">{liveVoiceConnected ? 'Vocal Bridge · WebRTC connected' : 'Vocal Bridge · secure server token'}</p></div></div><div className="absolute -bottom-12 -right-12 h-60 w-60 rounded-full border-[24px] border-[#d3e8d8]" /></section>
+    <section className="rounded-[32px] border border-stone-200 bg-white p-6 sm:p-8"><div className="flex items-center justify-between"><div><p className="eyebrow">Conversation transcript</p><h2 className="mt-1 text-xl font-bold text-ink">Your travel brief</h2></div><Headphones className="text-moss" /></div><label className="sr-only" htmlFor="trip-conversation">Trip request</label><textarea id="trip-conversation" value={conversation} onChange={(event) => setConversation(event.target.value)} className="mt-5 min-h-36 w-full resize-none rounded-2xl border border-stone-200 bg-stone-50 p-4 text-sm leading-6 text-ink outline-none transition focus:border-moss focus:ring-4 focus:ring-moss/10" /><button onClick={() => void createPlan()} disabled={loading} className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-ink px-4 py-3.5 text-sm font-bold text-white transition hover:bg-moss disabled:cursor-wait disabled:opacity-70"><Sparkles size={17} />{loading ? 'Understanding your trip…' : 'Create my trip brief'}</button>{result && <p className="mt-3 text-center text-xs font-semibold text-moss">{result.source === 'mock' ? 'Demo extraction' : 'Vocal Bridge extraction'} · {Math.round(result.confidence * 100)}% confidence</p>}</section>
+    <section className="rounded-[32px] border border-stone-200 bg-white p-6 xl:col-span-2"><div className="flex flex-wrap items-end justify-between gap-4"><div><p className="eyebrow">Structured output</p><h2 className="mt-1 text-xl font-bold text-ink">The AI heard the important things.</h2></div><span className="rounded-full bg-[#eff6f1] px-3 py-1.5 text-xs font-bold text-moss">{extracted.travelStyle}</span></div><div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4"><div className="soft-stat"><span>Flying from</span><strong>{extracted.origin || 'Not specified'}</strong></div><div className="soft-stat"><span>Destination</span><strong>{extracted.destination}</strong></div><div className="soft-stat"><span>Depart</span><strong>{extracted.departureDate || 'Choose in checkout'}</strong></div><div className="soft-stat"><span>Return</span><strong>{extracted.returnDate || 'Choose in checkout'}</strong></div><div className="soft-stat"><span>Time together</span><strong>{extracted.duration} days</strong></div><div className="soft-stat"><span>Group size</span><strong>{extracted.travelers} friends</strong></div><div className="soft-stat"><span>Shared budget</span><strong>{money(extracted.budget)}</strong></div></div><p className="mt-4 text-xs font-semibold text-moss">These details now feed directly into Booking & payment.</p><div className="mt-4 flex flex-wrap gap-2">{extracted.interests.map((interest) => <span className="rounded-full bg-sand px-3 py-1.5 text-xs font-bold capitalize text-ink" key={interest}>{interest}</span>)}{extracted.foodPreferences.map((food) => <span className="rounded-full bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-700" key={food}>{food}</span>)}</div></section>
+    {trip.briefTranscript && <FriendSetup trip={trip} onTrip={onTrip} />}
+    {trip.preferenceCollection && <section className="rounded-[32px] border border-stone-200 bg-white p-6 xl:col-span-2"><div className="flex flex-wrap items-center justify-between gap-4"><div><p className="eyebrow">Admin review</p><h2 className="mt-1 text-2xl font-bold text-ink">Ready for {trip.preferenceCollection.adminName}'s decision.</h2></div><div className="flex rounded-xl bg-stone-100 p-1"><button onClick={() => setReviewTab('plan')} className={`rounded-lg px-3 py-2 text-xs font-bold ${reviewTab === 'plan' ? 'bg-white text-ink shadow-sm' : 'text-stone-500'}`}>Negotiated plan</button><button onClick={() => setReviewTab('people')} className={`rounded-lg px-3 py-2 text-xs font-bold ${reviewTab === 'people' ? 'bg-white text-ink shadow-sm' : 'text-stone-500'}`}>People & happiness</button></div></div>{reviewTab === 'plan' ? <div className="mt-5 rounded-2xl bg-[#fff8e9] p-5"><p className="text-sm font-bold text-ink">{trip.preferenceCollection.approvalSummary}</p><p className="mt-3 border-l-2 border-coral pl-4 text-sm leading-6 text-stone-600">{trip.preferenceCollection.negotiation}</p><div className="mt-4 flex items-center gap-2 text-xs font-bold text-moss"><CheckCircle2 size={16} /> {trip.preferenceCollection.source === 'mock' ? 'Simulated Vocal Bridge conversations complete' : 'Vocal Bridge conversations complete'}</div></div> : <div className="mt-5 grid gap-3 md:grid-cols-3">{trip.preferenceCollection.calls.map((call) => <article className="rounded-2xl bg-[#fafbf9] p-4" key={call.travelerId}><div className="flex items-center justify-between"><p className="font-bold text-ink">{call.name}</p><span className="rounded-full bg-emerald-100 px-2 py-1 text-[10px] font-bold text-moss">{call.happiness}% happy</span></div><p className="mt-3 text-xs leading-5 text-stone-600">{call.summary}</p><p className="mt-3 text-xs font-semibold text-ink">Compromise: <span className="font-medium text-stone-600">{call.compromise}</span></p></article>)}</div>}</section>}
   </div>;
+}
+
+function TravelerManager({ trip, onTrip }: { trip: Trip; onTrip: (trip: Trip, note: string) => void }) {
+  const [name, setName] = useState('');
+  const [phone, setPhone] = useState('');
+  const [busy, setBusy] = useState(false);
+  const mutate = async (input: { action: 'add' | 'update' | 'remove'; id?: string; name?: string; phone?: string }) => { setBusy(true); try { const response = await api.mutateTraveler(input, trip); onTrip(response.trip, 'Traveler roster updated. Preferences, booking totals, and payment participants were recalculated.'); if (input.action === 'add') { setName(''); setPhone(''); } } catch (error) { onTrip(trip, error instanceof Error ? error.message : 'Could not update travelers.'); } finally { setBusy(false); } };
+  return <section className="mt-6 rounded-[30px] border border-stone-200 bg-white p-5 sm:p-6"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="eyebrow text-moss">Traveler roster</p><h2 className="mt-1 text-xl font-bold text-ink">Build the group before collecting preferences.</h2><p className="mt-2 text-sm text-stone-600">Roster changes invalidate prior approval and rebalance downstream totals.</p></div><span className="rounded-full bg-[#eff6f1] px-3 py-1.5 text-xs font-bold text-moss">{trip.travelers.length} travelers</span></div><div className="mt-5 grid gap-2 lg:grid-cols-[1fr_1fr_auto]"><input aria-label="New traveler name" placeholder="Traveler name" value={name} onChange={(event) => setName(event.target.value)} className="rounded-xl border border-stone-200 px-3 py-2.5 text-sm" /><input aria-label="New traveler phone" placeholder="Phone (optional)" value={phone} onChange={(event) => setPhone(event.target.value)} className="rounded-xl border border-stone-200 px-3 py-2.5 text-sm" /><button disabled={busy || name.trim().length < 2} onClick={() => void mutate({ action: 'add', name, phone })} className="rounded-xl bg-moss px-4 py-2.5 text-sm font-bold text-white disabled:opacity-40">Add traveler</button></div><div className="mt-4 grid gap-2 sm:grid-cols-2">{trip.travelers.map((traveler) => <div key={traveler.id} className="flex items-center justify-between gap-3 rounded-xl bg-stone-50 px-3 py-3"><div><b className="text-sm text-ink">{traveler.name}</b><p className="text-xs text-stone-500">{traveler.phone || 'No phone saved'}</p></div><div className="flex gap-2"><button disabled={busy} onClick={() => { const next = window.prompt('Traveler name', traveler.name); if (next) void mutate({ action: 'update', id: traveler.id, name: next, phone: traveler.phone }); }} className="text-xs font-bold text-moss">Edit</button><button disabled={busy || trip.travelers.length <= 2} onClick={() => void mutate({ action: 'remove', id: traveler.id })} className="text-xs font-bold text-coral disabled:opacity-30">Remove</button></div></div>)}</div></section>;
 }
 
 function TravelerProfiles({ trip }: { trip: Trip }) {
@@ -173,52 +402,9 @@ function TravelerProfiles({ trip }: { trip: Trip }) {
   return <section className="rounded-[30px] border border-stone-200 bg-white p-5 sm:p-6"><div className="flex flex-wrap items-start justify-between gap-4"><div><p className="eyebrow">Travel DNA · group model</p><h2 className="mt-1 text-xl font-bold text-ink">Everyone has a place in the plan.</h2></div><span className="rounded-full bg-[#eff6f1] px-3 py-1.5 text-xs font-bold text-moss">{trip.groupPreference.recommendedPace}</span></div><div className="mt-5 grid gap-3 lg:grid-cols-4">{trip.travelers.map((traveler) => <article key={traveler.id} className="rounded-2xl bg-[#fafbf9] p-4"><div className="flex items-center gap-3"><span className="grid h-10 w-10 place-items-center rounded-full bg-ink text-xs font-bold text-white">{traveler.initials}</span><div><p className="font-bold text-ink">{traveler.name}</p><p className="text-[11px] capitalize text-stone-500">{traveler.pacePreference} pace · {traveler.foodPreference}</p></div></div><div className="mt-4 space-y-1.5">{Object.entries(traveler.interests).sort(([, a], [, b]) => b - a).slice(0, 3).map(([name, value]) => <div className="flex items-center justify-between text-xs" key={name}><span className="capitalize text-stone-600">{name}</span><StarRow value={value} /></div>)}</div></article>)}</div><div className="mt-5 flex flex-col gap-3 rounded-2xl bg-[#fff8e9] p-4 sm:flex-row sm:items-center"><Bot className="shrink-0 text-coral" /><p className="text-sm leading-6 text-ink"><span className="font-bold">Why this route?</span> {trip.groupPreference.explanation}</p></div><div className="mt-5 flex flex-wrap gap-x-5 gap-y-2">{ranked.slice(0, 5).map(([interest, score]) => <div className="flex items-center gap-2" key={interest}><span className="capitalize text-xs font-semibold text-stone-600">{interest}</span><div className="h-1.5 w-16 overflow-hidden rounded-full bg-stone-100"><div className="h-full rounded-full bg-moss" style={{ width: `${Number(score) * 20}%` }} /></div></div>)}</div></section>;
 }
 
-const agentStatusMeta: Record<AgentRunStatus | 'idle', { label: string; className: string }> = {
-  idle: { label: 'Ready', className: 'bg-stone-100 text-stone-600' },
-  running: { label: 'Working', className: 'bg-amber-100 text-amber-800' },
-  completed: { label: 'Done', className: 'bg-emerald-100 text-emerald-800' },
-  failed: { label: 'Needs review', className: 'bg-rose-100 text-rose-800' },
-};
-
-function AgentNetwork() {
-  const [system, setSystem] = useState<AgentSystem | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const load = async () => {
-    setLoading(true);
-    setError(null);
-    try { setSystem(await api.getAgents()); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not load the agent network.'); }
-    finally { setLoading(false); }
-  };
-  useEffect(() => { void load(); }, []);
-
-  const recentSteps = system?.recentRuns.flatMap((run) => run.steps) ?? [];
-  const statusFor = (agentId: SpecialistAgentId) => recentSteps.find((step) => step.agentId === agentId)?.status ?? 'idle';
-
-  return <div className="space-y-6">
-    <section className="relative overflow-hidden rounded-[32px] bg-ink px-7 py-8 text-white sm:px-10"><div className="relative z-10 flex flex-col justify-between gap-6 md:flex-row md:items-end"><div><p className="eyebrow text-emerald-200">Multi-agent control plane</p><h1 className="mt-2 max-w-2xl font-display text-4xl leading-none sm:text-5xl">One request. Seven focused minds.</h1><p className="mt-4 max-w-2xl text-sm leading-6 text-white/65">The Journey Orchestrator delegates each job to a tool-backed specialist, merges their output, and leaves a trace you can inspect.</p></div><div className="flex items-center gap-3 rounded-2xl bg-white/10 px-4 py-3"><span className="grid h-10 w-10 place-items-center rounded-xl bg-[#8fe0b7] text-ink"><Bot size={20} /></span><div><p className="text-2xl font-bold">{system?.totalAgents ?? 7}</p><p className="text-[10px] font-bold uppercase tracking-widest text-white/55">agents in network</p></div></div></div><div className="absolute -right-14 -top-16 h-72 w-72 rounded-full border-[30px] border-white/5" /></section>
-
-    {error && <div role="alert" className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm font-semibold text-rose-800">{error} Restart the local API after pulling the latest code, then refresh this panel.</div>}
-
-    <section aria-busy={loading} className="grid gap-5 xl:grid-cols-[0.72fr_1.28fr]">
-      <article className="rounded-[28px] border border-moss/20 bg-[#eff6f1] p-6"><div className="flex items-center justify-between"><span className="grid h-12 w-12 place-items-center rounded-2xl bg-moss text-white"><Bot size={22} /></span><span className="rounded-full bg-white px-3 py-1.5 text-xs font-bold text-moss">Coordinator</span></div><h2 className="mt-5 text-2xl font-bold text-ink">{system?.coordinator.name ?? 'Journey Orchestrator'}</h2><p className="mt-3 text-sm leading-6 text-stone-600">{system?.coordinator.role ?? 'Routes work to the right specialist and merges the result into one trip.'}</p><div className="mt-5 flex flex-wrap gap-2">{(system?.coordinator.tools ?? ['Task routing', 'Shared trip context', 'Decision trace']).map((tool) => <span key={tool} className="rounded-full bg-white px-3 py-1.5 text-xs font-semibold text-moss">{tool}</span>)}</div></article>
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{system?.specialists.map((agent) => {
-        const status = statusFor(agent.id as SpecialistAgentId);
-        const meta = agentStatusMeta[status];
-        return <article key={agent.id} className="rounded-3xl border border-stone-200 bg-white p-5"><div className="flex items-center justify-between"><span className="grid h-10 w-10 place-items-center rounded-2xl bg-stone-50 text-moss ring-1 ring-stone-200"><Sparkles size={17} /></span><span className={`rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide ${meta.className}`}>{meta.label}</span></div><h3 className="mt-4 font-bold text-ink">{agent.name}</h3><p className="mt-2 text-xs leading-5 text-stone-500">{agent.role}</p><p className="mt-4 text-[10px] font-bold uppercase tracking-widest text-stone-400">{agent.tools.join(' · ')}</p></article>;
-      }) ?? Array.from({ length: 6 }, (_, index) => <div className="h-48 animate-pulse rounded-3xl bg-stone-100" key={index} />)}</div>
-    </section>
-
-    <section className="rounded-[28px] border border-stone-200 bg-white p-5 sm:p-7"><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="eyebrow">Delegation trace</p><h2 className="mt-1 text-xl font-bold text-ink">See which agent did what.</h2></div><button type="button" onClick={() => void load()} disabled={loading} className="inline-flex items-center gap-2 rounded-xl bg-stone-100 px-3 py-2 text-xs font-bold text-ink transition hover:bg-stone-200 disabled:opacity-60"><RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> Refresh activity</button></div>
-      <div className="mt-5" aria-live="polite">{system?.recentRuns.length ? <div className="space-y-4">{system.recentRuns.slice(0, 5).map((run) => <article key={run.id} className="rounded-2xl bg-[#fafbf9] p-4"><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-sm font-bold text-ink">{run.intent}</p><p className="mt-1 text-[10px] font-semibold uppercase tracking-wider text-stone-400">{run.id} · {new Date(run.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p></div><span className={`rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide ${agentStatusMeta[run.status].className}`}>{agentStatusMeta[run.status].label}</span></div><ol className="mt-4 space-y-2 border-l-2 border-moss/15 pl-4">{run.steps.map((step) => <li key={step.id} className="relative"><span className="absolute -left-[1.32rem] top-1.5 h-2.5 w-2.5 rounded-full bg-moss ring-4 ring-white" /><div className="flex flex-wrap items-baseline gap-x-2"><b className="text-xs text-ink">{step.agentName}</b><span className="text-xs text-stone-500">{step.task}</span></div>{step.outputSummary && <p className="mt-1 text-[11px] font-semibold text-moss">{step.outputSummary}{typeof step.durationMs === 'number' ? ` · ${step.durationMs}ms` : ''}</p>}{step.error && <p className="mt-1 text-[11px] font-semibold text-rose-700">{step.error}</p>}</li>)}</ol></article>)}</div> : <div className="rounded-2xl border border-dashed border-stone-300 bg-stone-50 px-5 py-8 text-center"><Bot className="mx-auto text-stone-300" /><p className="mt-3 text-sm font-bold text-ink">No handoffs yet.</p><p className="mt-1 text-xs text-stone-500">Create a voice brief, choose a booking, or trigger a disruption—then refresh to inspect the run.</p></div>}</div>
-    </section>
-  </div>;
-}
-
 function JourneyMap({ trip, activeDay, setActiveDay }: { trip: Trip; activeDay: number; setActiveDay: (day: number) => void }) {
   const [selected, setSelected] = useState<ItineraryItem | null>(trip.itinerary.find((item) => item.day === activeDay) ?? null);
-  const dayItems = trip.itinerary.filter((item) => item.day === activeDay);
+  const dayItems = trip.itinerary.filter((item) => item.day === activeDay).sort((left, right) => left.time.localeCompare(right.time));
   useEffect(() => { setSelected(trip.itinerary.find((item) => item.day === activeDay) ?? null); }, [activeDay, trip.itinerary]);
   return <div className="space-y-6"><section className="flex flex-col justify-between gap-4 rounded-[32px] bg-ink px-7 py-7 text-white sm:flex-row sm:items-end"><div><p className="eyebrow text-emerald-200">Route intelligence</p><h1 className="mt-1 font-display text-4xl">The journey, in motion.</h1><p className="mt-3 max-w-xl text-sm leading-6 text-white/65">Stops are ordered by distance, reservation time, opening hours, and how much of the day you want to spend walking.</p></div><div className="flex items-center gap-2 text-xs font-semibold text-white/80"><span className="h-2 w-2 rounded-full bg-[#8fe0b7] animate-pulse" /> Route is live</div></section><section className="grid gap-5 xl:grid-cols-[1fr_320px]"><div><DayPills trip={trip} activeDay={activeDay} setActiveDay={setActiveDay} /><div className="mt-4"><RouteMap trip={trip} activeDay={activeDay} onSelect={setSelected} /></div></div><aside className="rounded-[28px] border border-stone-200 bg-white p-5"><p className="eyebrow">Selected stop</p>{selected ? <><div className="mt-4 flex items-start gap-3"><IconBadge category={selected.category} /><div><h2 className="font-bold text-ink">{selected.title}</h2><p className="mt-1 text-sm text-stone-500">{selected.subtitle}</p></div></div><div className="mt-6 space-y-3 border-y border-stone-100 py-5"><div className="flex justify-between text-sm"><span className="text-stone-500">Arrive</span><b className="text-ink">{selected.time}</b></div><div className="flex justify-between text-sm"><span className="text-stone-500">Time here</span><b className="text-ink">{selected.durationMins} minutes</b></div><div className="flex justify-between text-sm"><span className="text-stone-500">Transit buffer</span><b className="text-ink">{selected.travelMins} minutes</b></div><div className="flex justify-between text-sm"><span className="text-stone-500">Opening window</span><b className="text-ink">{selected.openingHours}</b></div></div><p className="mt-5 text-xs leading-5 text-stone-500">This stop is positioned to avoid retracing the group’s route and preserve your next reservation.</p></> : <p className="mt-4 text-sm text-stone-500">Select a route marker.</p>}</aside></section><section className="rounded-[28px] border border-stone-200 bg-white p-5"><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="eyebrow">Day {activeDay} timeline</p><h2 className="mt-1 text-xl font-bold text-ink">Optimized sequence</h2></div><span className="text-xs font-bold text-moss">{dayItems.reduce((sum, item) => sum + item.travelMins, 0)} min transit · {dayItems.reduce((sum, item) => sum + item.durationMins, 0)} min experiences</span></div><div className="mt-4"><Timeline items={dayItems} compact /></div></section></div>;
 }
@@ -226,11 +412,11 @@ function JourneyMap({ trip, activeDay, setActiveDay }: { trip: Trip; activeDay: 
 function OperationsCenter({ trip, onTrip }: { trip: Trip; onTrip: (trip: Trip, note: string) => void }) {
   const [running, setRunning] = useState<ReplanType | null>(null);
   const [explanation, setExplanation] = useState(trip.events[0]?.explanation ?? 'Every demo event recalculates the itinerary, then explains the trade-off in plain language.');
-  const trigger = async (type: ReplanType) => { setRunning(type); try { const response = await api.replan(type); setExplanation(response.event.explanation); onTrip(response.trip, `${response.event.title}: itinerary updated.`); } catch (error) { onTrip(trip, error instanceof Error ? error.message : 'Could not replan right now.'); } finally { setRunning(null); } };
+  const trigger = async (type: ReplanType) => { setRunning(type); try { const response = await api.replan(type, trip); setExplanation(response.event.explanation); onTrip(response.trip, `${response.event.title}: itinerary updated.`); } catch (error) { onTrip(trip, error instanceof Error ? error.message : 'Could not replan right now.'); } finally { setRunning(null); } };
   return <div className="space-y-6"><section className="rounded-[32px] bg-[#fff2ed] p-7 sm:p-9"><div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end"><div><p className="eyebrow text-coral">Always in the loop</p><h1 className="mt-1 max-w-2xl font-display text-4xl leading-none text-ink sm:text-5xl">Travel changes. Your plan should, too.</h1><p className="mt-4 max-w-xl text-sm leading-6 text-stone-600">Trigger a disruption and watch JourneyOS protect your highest-value moments while rebalancing the route.</p></div><div className="rounded-2xl bg-white/75 px-4 py-3 text-xs font-bold text-coral">Live simulation</div></div></section><section className="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]"><div className="rounded-[28px] border border-stone-200 bg-white p-5"><p className="eyebrow">Demo events</p><h2 className="mt-1 text-xl font-bold text-ink">What happened?</h2><div className="mt-5 grid gap-2">{eventMeta.map(({ type, label, icon: Icon, className }) => <button disabled={running !== null} onClick={() => void trigger(type)} key={type} className={`flex items-center justify-between rounded-2xl border px-4 py-3.5 text-left text-sm font-bold transition disabled:cursor-wait disabled:opacity-60 ${className}`}><span className="flex items-center gap-3"><Icon size={18} /> {running === type ? 'Re-optimizing…' : label}</span><ChevronRight size={17} /></button>)}</div></div><div className="rounded-[28px] border border-moss/15 bg-[#f6fbf7] p-5 sm:p-7"><div className="flex items-start gap-3"><span className="grid h-11 w-11 place-items-center rounded-2xl bg-moss text-white"><Bot size={20} /></span><div><p className="eyebrow text-moss">AI decision log</p><h2 className="mt-1 text-xl font-bold text-ink">Here’s what changed — and why.</h2></div></div><p className="mt-6 border-l-2 border-coral pl-4 text-lg leading-8 text-ink">“{explanation}”</p><div className="mt-7 grid gap-3 sm:grid-cols-3"><div className="soft-stat"><span>Route impact</span><strong>− 42 min</strong></div><div className="soft-stat"><span>Priorities held</span><strong>4 of 4</strong></div><div className="soft-stat"><span>Update status</span><strong className="text-moss">Synced</strong></div></div><div className="mt-7 border-t border-moss/10 pt-5"><p className="text-xs font-bold uppercase tracking-[0.14em] text-stone-400">Recent changes</p><div className="mt-3 space-y-2">{trip.events.slice(0, 3).map((event) => <div className="flex items-center gap-3 text-sm" key={event.id}><Check className="text-moss" size={15} /><span className="font-semibold text-ink">{event.title}</span><span className="ml-auto text-xs text-stone-400">just now</span></div>)}{trip.events.length === 0 && <p className="text-sm text-stone-500">No disruptions yet — the original itinerary is holding strong.</p>}</div></div></div></section></div>;
 }
 
-function BookingCheckout({ trip, onTrip }: { trip: Trip; onTrip: (trip: Trip, note: string) => void }) {
+function BookingCheckoutLegacy({ trip, onTrip }: { trip: Trip; onTrip: (trip: Trip, note: string) => void }) {
   const [order, setOrder] = useState<PaymentOrder | null>(null);
   const [busy, setBusy] = useState(false);
   const selectFlight = async (id: string) => { setBusy(true); try { const response = await api.selectFlight(id); onTrip(response.trip, 'Flight selection and group total updated.'); } finally { setBusy(false); } };
@@ -240,20 +426,386 @@ function BookingCheckout({ trip, onTrip }: { trip: Trip; onTrip: (trip: Trip, no
   return <div className="space-y-6"><section className="flex flex-col gap-5 rounded-[32px] bg-ink px-7 py-8 text-white sm:flex-row sm:items-end sm:justify-between"><div><p className="eyebrow text-emerald-200">Booking command center</p><h1 className="mt-1 font-display text-4xl">Choose with confidence.</h1><p className="mt-3 max-w-xl text-sm leading-6 text-white/65">Every option is normalized into one simple decision. The group cost updates before anyone pays.</p></div><div className="rounded-2xl bg-white/10 px-4 py-3 text-right"><p className="text-[10px] font-bold uppercase tracking-widest text-white/50">Trip total</p><p className="mt-1 text-2xl font-bold">{money(trip.budget.spent)}</p></div></section><section className="grid gap-6 xl:grid-cols-2"><div className="rounded-[28px] border border-stone-200 bg-white p-5"><div className="flex items-center justify-between"><div><p className="eyebrow">Sabre sandbox</p><h2 className="mt-1 text-xl font-bold text-ink">Flights to Tokyo</h2></div><Plane className="text-moss" /></div><div className="mt-5 space-y-3">{trip.flights.map((flight) => <button disabled={busy} onClick={() => void selectFlight(flight.id)} className={`w-full rounded-2xl border p-4 text-left transition ${flight.selected ? 'border-moss bg-[#eff6f1] ring-1 ring-moss/10' : 'border-stone-200 hover:border-moss/40'}`} key={flight.id}><div className="flex items-start justify-between gap-3"><div><p className="font-bold text-ink">{flight.airline} <span className="font-medium text-stone-400">{flight.code}</span></p><p className="mt-1 text-xs text-stone-500">{flight.departure} {flight.departureTime} <ArrowRight className="mx-1 inline" size={12} /> {flight.arrival} {flight.arrivalTime}</p></div><div className="text-right"><p className="font-bold text-ink">{money(flight.price)}</p><p className="text-[10px] text-stone-400">per traveler</p></div></div><div className="mt-3 flex items-center justify-between text-xs"><span className="text-stone-500">{flight.duration} · {flight.stops === 0 ? 'Nonstop' : `${flight.stops} stop`}</span>{flight.selected && <span className="flex items-center gap-1 font-bold text-moss"><CheckCircle2 size={14} /> Selected</span>}</div></button>)}</div></div><div className="rounded-[28px] border border-stone-200 bg-white p-5"><div className="flex items-center justify-between"><div><p className="eyebrow">Sabre sandbox</p><h2 className="mt-1 text-xl font-bold text-ink">Stay in the middle of it.</h2></div><HotelIcon className="text-coral" /></div><div className="mt-5 space-y-3">{trip.hotels.map((hotel) => <button disabled={busy} onClick={() => void selectHotel(hotel.id)} className={`w-full rounded-2xl border p-4 text-left transition ${hotel.selected ? 'border-moss bg-[#eff6f1] ring-1 ring-moss/10' : 'border-stone-200 hover:border-moss/40'}`} key={hotel.id}><div className="flex items-start justify-between gap-3"><div><p className="font-bold text-ink">{hotel.name}</p><p className="mt-1 text-xs text-stone-500">{hotel.location} · ★ {hotel.rating}</p></div><div className="text-right"><p className="font-bold text-ink">{money(hotel.totalPrice)}</p><p className="text-[10px] text-stone-400">trip total</p></div></div><div className="mt-3 flex items-center justify-between text-xs"><span className="text-stone-500">{hotel.amenities.slice(0, 2).join(' · ')}</span>{hotel.selected && <span className="flex items-center gap-1 font-bold text-moss"><CheckCircle2 size={14} /> Selected</span>}</div></button>)}</div></div></section><section className="grid gap-6 xl:grid-cols-[1fr_0.9fr]"><div className="rounded-[28px] border border-stone-200 bg-white p-6"><p className="eyebrow">Cost clarity</p><h2 className="mt-1 text-2xl font-bold text-ink">One trip total. A fair split.</h2><div className="mt-5 space-y-3">{Object.entries({ Flights: trip.budget.flight, Hotel: trip.budget.hotel, Activities: trip.budget.activities, Food: trip.budget.food }).map(([label, amount]) => <div className="flex items-center justify-between text-sm" key={label}><span className="text-stone-500">{label}</span><b className="text-ink">{money(amount)}</b></div>)}<div className="flex items-center justify-between border-t border-stone-200 pt-3 text-lg"><b className="text-ink">Total</b><b className="text-ink">{money(trip.budget.spent)}</b></div></div></div><div className="rounded-[28px] bg-[#eff6f1] p-6"><div className="flex items-start justify-between"><div><p className="eyebrow text-moss">PayPal checkout</p><h2 className="mt-1 text-2xl font-bold text-ink">Split it four ways.</h2></div><WalletCards className="text-moss" /></div>{order ? <div className="mt-5">{order.split.map((person) => <div className="flex items-center justify-between border-b border-moss/10 py-2.5 text-sm" key={person.travelerId}><span className="font-semibold text-ink">{person.name}</span><b className="text-ink">{money(person.amount)}</b></div>)}{order.status === 'COMPLETED' ? <div className="mt-5 flex items-center gap-2 rounded-2xl bg-moss px-4 py-3 text-sm font-bold text-white"><CheckCircle2 size={18} /> Payment confirmed · booking held</div> : <button disabled={busy} onClick={() => void capture()} className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-[#ffc439] px-4 py-3.5 text-sm font-bold text-[#1d2d35] transition hover:bg-[#ffce5c]"><CreditCard size={17} /> {order.mock ? 'Complete demo payment' : 'Continue to PayPal'}</button>}</div> : <><p className="mt-4 text-sm leading-6 text-stone-600">Create an order, then give each traveler an equal, transparent share of the selected itinerary.</p><button disabled={busy} onClick={() => void startCheckout()} className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-[#ffc439] px-4 py-3.5 text-sm font-bold text-[#1d2d35] transition hover:bg-[#ffce5c]"><CreditCard size={17} /> {busy ? 'Creating order…' : 'Checkout with PayPal'}</button></>}</div></section></div>;
 }
 
+function BookingCheckoutLegacy2({ trip, onTrip }: { trip: Trip; onTrip: (trip: Trip, note: string) => void }) {
+  const [view, setView] = useState<'admin' | 'traveler'>('admin');
+  const [order, setOrder] = useState<PaymentOrder | null>(null);
+  const [shares, setShares] = useState<Record<string, number>>(() => Object.fromEntries(trip.travelers.map((traveler) => [traveler.id, Number((100 / trip.travelers.length).toFixed(2))])));
+  const totalPercent = Object.values(shares).reduce((sum, value) => sum + value, 0);
+  const validSplit = Math.abs(totalPercent - 100) < 0.01;
+  const selectedFlight = trip.flights.find((flight) => flight.selected) ?? trip.flights[0];
+  const selectedHotel = trip.hotels.find((hotel) => hotel.selected) ?? trip.hotels[0];
+  const traveler = trip.travelers.find((person) => person.id !== trip.travelers[0]?.id) ?? trip.travelers[0];
+  const createOrder = async () => {
+    if (!validSplit) return onTrip(trip, 'Custom shares must add up to exactly 100%.');
+    try {
+      const response = await api.createOrder(shares);
+      setOrder(response.order);
+      onTrip(trip, 'Custom split checkout created for each traveler.');
+    } catch (error) { onTrip(trip, error instanceof Error ? error.message : 'Could not create the split checkout.'); }
+  };
+  return <div className="space-y-6"><section className="rounded-[32px] bg-ink px-7 py-8 text-white"><p className="eyebrow text-emerald-200">Admin-led checkout</p><h1 className="mt-1 font-display text-4xl">A fair plan. A clear share.</h1><p className="mt-3 max-w-2xl text-sm leading-6 text-white/65">{trip.request.destination} is ready for review. Choose how costs are shared before anyone is asked to pay.</p></section><section className="grid gap-6 xl:grid-cols-[1fr_0.8fr]"><div className="rounded-[28px] border border-stone-200 bg-white p-6"><div className="flex items-center justify-between"><div><p className="eyebrow">Travel choices</p><h2 className="mt-1 text-xl font-bold text-ink">Outbound to {trip.request.destination}</h2></div><Plane className="text-moss" /></div><div className="mt-5 grid gap-3 sm:grid-cols-2"><div className="rounded-2xl bg-[#eff6f1] p-4"><p className="font-bold text-ink">{selectedFlight?.airline} {selectedFlight?.code}</p><p className="mt-1 text-xs text-stone-500">{selectedFlight?.departure} → {selectedFlight?.arrival} · {money((selectedFlight?.price ?? 0) * trip.request.travelers)}</p></div><div className="rounded-2xl bg-[#fff8e9] p-4"><p className="font-bold text-ink">{selectedHotel?.name}</p><p className="mt-1 text-xs text-stone-500">{selectedHotel?.location} · {money(selectedHotel?.totalPrice ?? 0)}</p></div></div><div className="mt-6 flex rounded-xl bg-stone-100 p-1"><button onClick={() => setView('admin')} className={`flex-1 rounded-lg px-3 py-2 text-xs font-bold ${view === 'admin' ? 'bg-white text-ink shadow-sm' : 'text-stone-500'}`}>Admin view</button><button onClick={() => setView('traveler')} className={`flex-1 rounded-lg px-3 py-2 text-xs font-bold ${view === 'traveler' ? 'bg-white text-ink shadow-sm' : 'text-stone-500'}`}>Traveler preview</button></div>{view === 'admin' ? <div className="mt-5"><div className="flex items-center justify-between"><h3 className="font-bold text-ink">Choose each share</h3><span className={`text-xs font-bold ${validSplit ? 'text-moss' : 'text-coral'}`}>{totalPercent.toFixed(2)}% of 100%</span></div><div className="mt-3 space-y-2">{trip.travelers.map((person) => <label className="flex items-center justify-between rounded-xl border border-stone-200 px-3 py-2.5" key={person.id}><span className="text-sm font-semibold text-ink">{person.name}</span><span className="flex items-center gap-2"><input type="number" min="0" max="100" step="0.01" value={shares[person.id] ?? 0} onChange={(event) => { const value = Number(event.target.value); setShares((current) => ({ ...current, [person.id]: Number.isFinite(value) ? value : 0 })); setOrder(null); }} className="w-20 rounded-lg border border-stone-200 px-2 py-1 text-right text-sm font-bold text-ink" /><b className="w-20 text-right text-sm text-moss">{money(trip.budget.spent * (shares[person.id] ?? 0) / 100)}</b></span></label>)}</div><button onClick={() => setShares(Object.fromEntries(trip.travelers.map((person) => [person.id, Number((100 / trip.travelers.length).toFixed(2))])))} className="mt-3 text-xs font-bold text-moss">Reset equal split</button></div> : <div className="mt-5 rounded-2xl bg-[#f6fbf7] p-5"><p className="text-xs font-bold uppercase tracking-widest text-moss">What {traveler?.name} sees</p><h3 className="mt-2 text-lg font-bold text-ink">Your {trip.request.destination} invitation</h3><p className="mt-2 text-sm leading-6 text-stone-600">Your share is {money(trip.budget.spent * (shares[traveler?.id ?? ''] ?? 0) / 100)} ({shares[traveler?.id ?? ''] ?? 0}%). You can review the agreed itinerary and accept or request a change.</p><p className="mt-3 text-xs font-semibold text-moss">Other travelers’ payment shares remain private.</p></div>}</div><aside className="rounded-[28px] bg-[#eff6f1] p-6"><p className="eyebrow text-moss">PayPal sandbox</p><h2 className="mt-1 text-2xl font-bold text-ink">Approve the split.</h2><p className="mt-4 text-sm leading-6 text-stone-600">Only the trip admin can publish this split. Travelers receive only their own amount and payment link.</p>{order ? <div className="mt-5 space-y-2">{order.split.map((person) => <div className="flex justify-between border-b border-moss/10 py-2 text-sm" key={person.travelerId}><span>{person.name}</span><b>{money(person.amount)}</b></div>)}<div className="mt-4 rounded-xl bg-moss px-3 py-2 text-sm font-bold text-white">Split checkout ready</div></div> : <button onClick={() => void createOrder()} disabled={!validSplit} className="mt-6 w-full rounded-2xl bg-[#ffc439] px-4 py-3.5 text-sm font-bold text-ink disabled:opacity-40"><CreditCard className="mr-2 inline" size={16} />Create custom checkout</button>}</aside></section></div>;
+}
+
+function BookingCheckout({ trip, onTrip }: { trip: Trip; onTrip: (trip: Trip, note: string) => void }) {
+  const [tab, setTab] = useState<'booking' | 'checkout'>('booking');
+  const [view, setView] = useState<'admin' | 'traveler'>('admin');
+  const [confirmed, setConfirmed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [order, setOrder] = useState<PaymentOrder | null>(null);
+  const equalShares = () => Object.fromEntries(trip.travelers.map((person) => [person.id, Number((100 / trip.travelers.length).toFixed(2))]));
+  const [shares, setShares] = useState<Record<string, number>>(equalShares);
+  const selectedFlight = trip.flights.find((flight) => flight.selected) ?? trip.flights[0];
+  const selectedHotel = trip.hotels.find((hotel) => hotel.selected) ?? trip.hotels[0];
+  const traveler = trip.travelers.find((person) => person.id !== trip.travelers[0]?.id) ?? trip.travelers[0];
+  const totalPercent = Object.values(shares).reduce((sum, value) => sum + value, 0);
+  const validSplit = Math.abs(totalPercent - 100) < 0.01;
+  const selectFlight = async (id: string) => {
+    setBusy(true);
+    try { const response = await api.selectFlight(id, trip); setConfirmed(false); setOrder(null); onTrip(response.trip, 'Flight choice updated. Confirm your booking choices before checkout.'); }
+    catch (error) { onTrip(trip, error instanceof Error ? error.message : 'Could not update the flight.'); }
+    finally { setBusy(false); }
+  };
+  const selectHotel = async (id: string) => {
+    setBusy(true);
+    try { const response = await api.selectHotel(id, trip); setConfirmed(false); setOrder(null); onTrip(response.trip, 'Hotel choice updated. Confirm your booking choices before checkout.'); }
+    catch (error) { onTrip(trip, error instanceof Error ? error.message : 'Could not update the hotel.'); }
+    finally { setBusy(false); }
+  };
+  const createOrder = async () => {
+    if (!confirmed) return onTrip(trip, 'Confirm the travel choices before creating checkout.');
+    if (!validSplit) return onTrip(trip, 'Custom shares must add up to exactly 100%.');
+    setBusy(true);
+    try { const response = await api.createOrder(shares); setOrder(response.order); onTrip(trip, 'Custom split checkout created for each traveler.'); }
+    catch (error) { onTrip(trip, error instanceof Error ? error.message : 'Could not create the split checkout.'); }
+    finally { setBusy(false); }
+  };
+  const openCheckout = () => {
+    if (!confirmed) return onTrip(trip, 'Select and confirm a flight and hotel first.');
+    setTab('checkout');
+  };
+  return <div className="space-y-6"><section className="rounded-[32px] bg-ink px-7 py-8 text-white"><p className="eyebrow text-emerald-200">Admin-led travel desk</p><div className="mt-2 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between"><div><h1 className="font-display text-4xl">Review, then collect.</h1><p className="mt-3 max-w-2xl text-sm leading-6 text-white/65">Lock the group’s travel choices first. Checkout only opens once the admin confirms the itinerary.</p></div><div className="flex rounded-xl bg-white/10 p-1 text-sm font-bold"><button onClick={() => setTab('booking')} className={`rounded-lg px-4 py-2 ${tab === 'booking' ? 'bg-white text-ink' : 'text-white/70'}`}>1. Booking</button><button onClick={openCheckout} className={`rounded-lg px-4 py-2 ${tab === 'checkout' ? 'bg-white text-ink' : 'text-white/70'}`}>2. Checkout</button></div></div></section>{tab === 'booking' ? <section className="space-y-6"><div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"><span><b>Demo inventory</b> is shown until a live Sabre search succeeds. Selectable options and totals below are always based on this trip’s destination.</span><span className="font-bold">{trip.request.destination}</span></div><div className="grid gap-6 xl:grid-cols-2"><div className="rounded-[28px] border border-stone-200 bg-white p-5"><div className="flex items-center justify-between"><div><p className="eyebrow">Flight choices</p><h2 className="mt-1 text-xl font-bold text-ink">Outbound to {trip.request.destination}</h2><p className="mt-1 text-xs text-stone-500">Round-trip selection and live fares are the next Sabre-backed step.</p></div><Plane className="text-moss" /></div><div className="mt-5 space-y-3">{trip.flights.map((flight) => <button disabled={busy} onClick={() => void selectFlight(flight.id)} className={`w-full rounded-2xl border p-4 text-left transition ${flight.selected ? 'border-moss bg-[#eff6f1]' : 'border-stone-200 hover:border-moss/40'}`} key={flight.id}><div className="flex items-start justify-between gap-3"><div><p className="font-bold text-ink">{flight.airline} <span className="font-medium text-stone-400">{flight.code}</span></p><p className="mt-1 text-xs text-stone-500">{flight.departure} {flight.departureTime} <ArrowRight className="mx-1 inline" size={12} /> {flight.arrival} {flight.arrivalTime}</p></div><b className="text-ink">{money(flight.price)}<small className="block text-right text-[10px] font-normal text-stone-400">per traveler</small></b></div><div className="mt-3 flex justify-between text-xs"><span className="text-stone-500">{flight.duration} · {flight.stops === 0 ? 'Nonstop' : `${flight.stops} stop`}</span>{flight.selected && <span className="flex items-center gap-1 font-bold text-moss"><CheckCircle2 size={14} /> Selected</span>}</div></button>)}</div></div><div className="rounded-[28px] border border-stone-200 bg-white p-5"><div className="flex items-center justify-between"><div><p className="eyebrow">Stay choices</p><h2 className="mt-1 text-xl font-bold text-ink">Hotels in {trip.request.destination}</h2><p className="mt-1 text-xs text-stone-500">The selected stay feeds directly into the checkout total.</p></div><HotelIcon className="text-coral" /></div><div className="mt-5 space-y-3">{trip.hotels.map((hotel) => <button disabled={busy} onClick={() => void selectHotel(hotel.id)} className={`w-full rounded-2xl border p-4 text-left transition ${hotel.selected ? 'border-moss bg-[#eff6f1]' : 'border-stone-200 hover:border-moss/40'}`} key={hotel.id}><div className="flex items-start justify-between gap-3"><div><p className="font-bold text-ink">{hotel.name}</p><p className="mt-1 text-xs text-stone-500">{hotel.location} · ★ {hotel.rating}</p></div><b className="text-ink">{money(hotel.totalPrice)}<small className="block text-right text-[10px] font-normal text-stone-400">trip total</small></b></div><div className="mt-3 flex justify-between text-xs"><span className="text-stone-500">{hotel.amenities.slice(0, 2).join(' · ')}</span>{hotel.selected && <span className="flex items-center gap-1 font-bold text-moss"><CheckCircle2 size={14} /> Selected</span>}</div></button>)}</div></div></div><div className="flex flex-col justify-between gap-4 rounded-[28px] bg-[#eff6f1] p-6 sm:flex-row sm:items-center"><div><p className="eyebrow text-moss">Admin confirmation</p><h2 className="mt-1 text-2xl font-bold text-ink">Ready to approve these choices?</h2><p className="mt-2 text-sm text-stone-600">{selectedFlight?.airline} {selectedFlight?.code} and {selectedHotel?.name} are currently selected.</p></div><button onClick={() => { setConfirmed(true); setTab('checkout'); onTrip(trip, 'Booking choices confirmed. You can now set payment shares.'); }} className="rounded-2xl bg-moss px-5 py-3 text-sm font-bold text-white"><CheckCircle2 className="mr-2 inline" size={17} />Confirm & continue</button></div></section> : <section className="grid gap-6 xl:grid-cols-[1fr_0.8fr]"><div className="rounded-[28px] border border-stone-200 bg-white p-6"><div className="flex items-center justify-between"><div><p className="eyebrow">Confirmed itinerary</p><h2 className="mt-1 text-xl font-bold text-ink">{trip.request.destination} cost split</h2></div><button onClick={() => setTab('booking')} className="text-xs font-bold text-moss">Edit booking</button></div><div className="mt-4 grid gap-3 sm:grid-cols-2"><div className="rounded-2xl bg-[#eff6f1] p-4"><p className="font-bold text-ink">{selectedFlight?.airline} {selectedFlight?.code}</p><p className="mt-1 text-xs text-stone-500">{selectedFlight?.departure} to {selectedFlight?.arrival} · {money((selectedFlight?.price ?? 0) * trip.request.travelers)}</p></div><div className="rounded-2xl bg-[#fff8e9] p-4"><p className="font-bold text-ink">{selectedHotel?.name}</p><p className="mt-1 text-xs text-stone-500">{selectedHotel?.location} · {money(selectedHotel?.totalPrice ?? 0)}</p></div></div><div className="mt-6 flex rounded-xl bg-stone-100 p-1"><button onClick={() => setView('admin')} className={`flex-1 rounded-lg px-3 py-2 text-xs font-bold ${view === 'admin' ? 'bg-white text-ink shadow-sm' : 'text-stone-500'}`}>Admin view</button><button onClick={() => setView('traveler')} className={`flex-1 rounded-lg px-3 py-2 text-xs font-bold ${view === 'traveler' ? 'bg-white text-ink shadow-sm' : 'text-stone-500'}`}>Traveler preview</button></div>{view === 'admin' ? <div className="mt-5"><div className="flex items-center justify-between"><h3 className="font-bold text-ink">Choose each share</h3><span className={`text-xs font-bold ${validSplit ? 'text-moss' : 'text-coral'}`}>{totalPercent.toFixed(2)}% of 100%</span></div><div className="mt-3 space-y-2">{trip.travelers.map((person) => <label className="flex items-center justify-between rounded-xl border border-stone-200 px-3 py-2.5" key={person.id}><span className="text-sm font-semibold text-ink">{person.name}</span><span className="flex items-center gap-2"><input type="number" min="0" max="100" step="0.01" value={shares[person.id] ?? 0} onChange={(event) => { const value = Number(event.target.value); setShares((current) => ({ ...current, [person.id]: Number.isFinite(value) ? value : 0 })); setOrder(null); }} className="w-20 rounded-lg border border-stone-200 px-2 py-1 text-right text-sm font-bold text-ink" /><b className="w-20 text-right text-sm text-moss">{money(trip.budget.spent * (shares[person.id] ?? 0) / 100)}</b></span></label>)}</div><button onClick={() => { setShares(equalShares()); setOrder(null); }} className="mt-3 text-xs font-bold text-moss">Reset equal split</button></div> : <div className="mt-5 rounded-2xl bg-[#f6fbf7] p-5"><p className="text-xs font-bold uppercase tracking-widest text-moss">What {traveler?.name} sees</p><h3 className="mt-2 text-lg font-bold text-ink">Your {trip.request.destination} invitation</h3><p className="mt-2 text-sm leading-6 text-stone-600">Your share is {money(trip.budget.spent * (shares[traveler?.id ?? ''] ?? 0) / 100)} ({shares[traveler?.id ?? ''] ?? 0}%). You can see your itinerary and amount, not other travelers’ shares.</p></div>}</div><aside className="rounded-[28px] bg-[#eff6f1] p-6"><p className="eyebrow text-moss">PayPal sandbox</p><h2 className="mt-1 text-2xl font-bold text-ink">Publish the split.</h2><p className="mt-4 text-sm leading-6 text-stone-600">The admin creates the order after review. In this demo, no real payment links or messages are sent.</p>{order ? <div className="mt-5 space-y-2">{order.split.map((person) => <div className="flex justify-between border-b border-moss/10 py-2 text-sm" key={person.travelerId}><span>{person.name}</span><b>{money(person.amount)}</b></div>)}<div className="mt-4 rounded-xl bg-moss px-3 py-2 text-sm font-bold text-white">Split checkout ready</div></div> : <button onClick={() => void createOrder()} disabled={!validSplit || busy} className="mt-6 w-full rounded-2xl bg-[#ffc439] px-4 py-3.5 text-sm font-bold text-ink disabled:opacity-40"><CreditCard className="mr-2 inline" size={16} />{busy ? 'Creating checkout...' : 'Create custom checkout'}</button>}</aside></section>}</div>;
+}
+
+function MapOptimizationPanel({ trip, activeDay, onTrip }: { trip: Trip; activeDay: number; onTrip: (trip: Trip, note: string) => void }) {
+  const stops = trip.itinerary.filter((item) => item.day === activeDay);
+  const before = [...stops].reverse();
+  const changed = stops.filter((item) => item.status === 'moved');
+  const currentStop = stops.find((item) => item.status === 'in-progress') ?? stops.find((item) => ['current', 'upcoming', 'moved'].includes(item.status));
+  const [actualDuration, setActualDuration] = useState(currentStop?.durationMins ?? 60);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { setActualDuration(currentStop?.durationMins ?? 60); }, [currentStop?.id, currentStop?.durationMins]);
+  const savedMinutes = Math.max(18, stops.reduce((sum, item) => sum + item.travelMins, 0) - Math.max(20, stops.length * 18));
+  const mutate = async (action: 'start' | 'complete' | 'skip' | 'delay', options: { id?: string; actualDurationMins?: number; minutes?: number }) => { setBusy(true); try { const response = await api.progressStop(action, trip, options); onTrip(response.trip, action === 'complete' ? 'Activity completed. Progress, schedule variance, route, and Travel DNA were updated.' : `Activity ${action} recorded.`); } catch (error) { onTrip(trip, error instanceof Error ? error.message : 'Could not update activity progress.'); } finally { setBusy(false); } };
+  const latestDna = trip.travelDna.changes?.[0];
+  // Keep the normal live page focused. Once a disruption changes this day,
+  // reveal the before/after explanation directly beneath the event controls.
+  if (changed.length === 0) return null;
+  return <section className="mt-6 rounded-[28px] border border-stone-200 bg-white p-6"><div className="flex flex-wrap items-start justify-between gap-4"><div><p className="eyebrow text-moss">Route intelligence</p><h2 className="mt-1 text-2xl font-bold text-ink">Why this order works.</h2><p className="mt-2 max-w-2xl text-sm leading-6 text-stone-600">JourneyOS groups nearby stops, protects time-sensitive visits, and redraws the sequence when a disruption changes the day.</p></div><div className="grid grid-cols-3 gap-2 text-center"><div className="rounded-xl bg-[#eff6f1] px-3 py-2"><b className="block text-moss">{(savedMinutes / 13).toFixed(1)} km</b><span className="text-[10px] text-stone-500">saved</span></div><div className="rounded-xl bg-[#eff6f1] px-3 py-2"><b className="block text-moss">{savedMinutes} min</b><span className="text-[10px] text-stone-500">saved</span></div><div className="rounded-xl bg-[#eff6f1] px-3 py-2"><b className="block text-moss">{Math.min(67, 20 + stops.length * 12)}%</b><span className="text-[10px] text-stone-500">less backtrack</span></div></div></div><div className="mt-5 grid gap-4 md:grid-cols-2"><article className="rounded-2xl bg-stone-50 p-4"><p className="text-xs font-bold uppercase tracking-widest text-stone-400">Before optimisation</p><ol className="mt-3 space-y-2">{before.map((item, index) => <li className="flex gap-2 text-sm text-stone-600" key={item.id}><span className="font-bold text-stone-400">{index + 1}</span>{item.title}</li>)}</ol></article><article className="rounded-2xl bg-[#eff6f1] p-4"><p className="text-xs font-bold uppercase tracking-widest text-moss">Optimised route</p><ol className="mt-3 space-y-2">{stops.map((item, index) => <li className="flex gap-2 text-sm text-ink" key={item.id}><span className="font-bold text-moss">{index + 1}</span><span>{item.title}{item.status === 'moved' && <b className="ml-2 text-xs text-coral">Updated</b>}</span></li>)}</ol></article></div><div className="mt-5 rounded-2xl border border-moss/20 bg-[#f6fbf7] p-5"><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="eyebrow text-moss">Live activity progress</p><h3 className="mt-1 text-lg font-bold text-ink">{currentStop ? currentStop.title : 'Day complete'}</h3><p className="mt-1 text-xs text-stone-600">{trip.progressState?.completionPercent ?? trip.progress}% complete · {trip.progressState?.scheduleVarianceMins ?? 0} minutes {Number(trip.progressState?.scheduleVarianceMins ?? 0) >= 0 ? 'behind' : 'ahead'}</p></div>{currentStop && <span className="rounded-full bg-white px-3 py-1.5 text-xs font-bold text-moss">{currentStop.status === 'in-progress' ? 'In progress' : `${currentStop.durationMins} min planned`}</span>}</div>{currentStop && <div className="mt-4 flex flex-wrap items-end gap-2">{currentStop.status !== 'in-progress' && <button disabled={busy} onClick={() => void mutate('start', { id: currentStop.id })} className="rounded-xl bg-ink px-4 py-2.5 text-sm font-bold text-white">Start activity</button>}<label className="text-xs font-bold text-stone-600">Actual minutes<input type="number" min="1" max="720" value={actualDuration} onChange={(event) => setActualDuration(Number(event.target.value))} className="ml-2 w-20 rounded-lg border border-stone-200 px-2 py-2" /></label><button disabled={busy} onClick={() => void mutate('complete', { id: currentStop.id, actualDurationMins: actualDuration })} className="rounded-xl bg-moss px-4 py-2.5 text-sm font-bold text-white">Complete</button><button disabled={busy} onClick={() => void mutate('skip', { id: currentStop.id })} className="rounded-xl border border-stone-200 px-4 py-2.5 text-sm font-bold text-stone-600">Skip</button><button disabled={busy} onClick={() => void mutate('delay', { minutes: 30 })} className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-2.5 text-sm font-bold text-amber-900">Running late +30m</button></div>}{latestDna && <p className="mt-4 rounded-xl bg-white px-4 py-3 text-sm text-stone-700"><b className="capitalize text-ink">Travel DNA learned from {latestDna.dimension}</b><span className="mt-1 block text-xs">{latestDna.reason.split(';')[0]}.</span></p>}</div>{changed.length > 0 && <p className="mt-4 rounded-xl bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900">Disruption applied: {changed.map((item) => item.title).join(', ')} changed on the live route and timeline.</p>}</section>;
+}
+
+function BookingCheckoutV2({ trip, onTrip }: { trip: Trip; onTrip: (trip: Trip, note: string) => void }) {
+  const [tab, setTab] = useState<'booking' | 'checkout'>('booking');
+  const [confirmed, setConfirmed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [order, setOrder] = useState<PaymentOrder | null>(null);
+  const [view, setView] = useState<'admin' | 'traveler'>('admin');
+  const equalShares = () => Object.fromEntries(trip.travelers.map((person) => [person.id, Number((100 / trip.travelers.length).toFixed(2))]));
+  const [shares, setShares] = useState<Record<string, number>>(equalShares);
+  const flight = trip.flights.find((item) => item.selected) ?? trip.flights[0];
+  const hotel = trip.hotels.find((item) => item.selected) ?? trip.hotels[0];
+  const traveler = trip.travelers[1] ?? trip.travelers[0];
+  const dates = trip.dates.match(/(\d+)[–-](\d+)\s+(.+)/);
+  const departureDate = dates ? `${dates[1]} ${dates[3]}` : trip.dates;
+  const returnDate = dates ? `${dates[2]} ${dates[3]}` : trip.dates;
+  const nights = dates ? Math.max(1, Number(dates[2]) - Number(dates[1])) : trip.request.duration - 1;
+  const totalPercent = Object.values(shares).reduce((sum, value) => sum + value, 0);
+  const validSplit = Math.abs(totalPercent - 100) < 0.01;
+  const selectFlight = async (id: string) => { setBusy(true); try { const response = await api.selectFlight(id, trip); setConfirmed(false); setOrder(null); onTrip(response.trip, 'Flight selection updated. Review the dates, then confirm booking.'); } catch (error) { onTrip(trip, error instanceof Error ? error.message : 'Could not update flight selection.'); } finally { setBusy(false); } };
+  const selectHotel = async (id: string) => { setBusy(true); try { const response = await api.selectHotel(id, trip); setConfirmed(false); setOrder(null); onTrip(response.trip, 'Hotel selection updated. Review the dates, then confirm booking.'); } catch (error) { onTrip(trip, error instanceof Error ? error.message : 'Could not update hotel selection.'); } finally { setBusy(false); } };
+  const continueToCheckout = () => { setConfirmed(true); setTab('checkout'); onTrip(trip, 'Booking review confirmed. Checkout and payment are ready for the admin.'); };
+  const createOrder = async () => { if (!validSplit) return onTrip(trip, 'Custom payment shares must total exactly 100%.'); setBusy(true); try { const response = await api.createOrder(shares); setOrder(response.order); onTrip(trip, 'Demo checkout created. No real payment links were sent.'); } catch (error) { onTrip(trip, error instanceof Error ? error.message : 'Could not create checkout.'); } finally { setBusy(false); } };
+  return <div className="space-y-6"><section className="rounded-[32px] bg-ink px-7 py-8 text-white"><p className="eyebrow text-emerald-200">Admin-led travel desk</p><h1 className="mt-1 font-display text-4xl">From choices to a clear payment plan.</h1><p className="mt-3 max-w-2xl text-sm leading-6 text-white/65">Review demo travel choices and dates first. Payment stays locked until the admin approves the booking review.</p></section><nav className="grid overflow-hidden rounded-[28px] border border-stone-200 bg-white sm:grid-cols-2" aria-label="Booking workflow"><button onClick={() => setTab('booking')} className={`flex items-center gap-4 px-6 py-5 text-left ${tab === 'booking' ? 'bg-[#eff6f1] ring-2 ring-inset ring-moss' : 'hover:bg-stone-50'}`}><span className={`grid h-10 w-10 place-items-center rounded-full text-sm font-bold ${tab === 'booking' ? 'bg-moss text-white' : 'bg-stone-100 text-stone-500'}`}>1</span><span><span className="block text-lg font-bold text-ink">Booking review</span><span className="mt-1 block text-xs text-stone-500">Flights, hotel and travel dates</span></span></button><button onClick={() => confirmed ? setTab('checkout') : onTrip(trip, 'Confirm Booking review before opening Checkout & payment.')} className={`flex items-center gap-4 border-t border-stone-200 px-6 py-5 text-left sm:border-l sm:border-t-0 ${tab === 'checkout' ? 'bg-[#fff8e9] ring-2 ring-inset ring-amber-300' : 'hover:bg-stone-50'}`}><span className={`grid h-10 w-10 place-items-center rounded-full text-sm font-bold ${tab === 'checkout' ? 'bg-amber-300 text-ink' : 'bg-stone-100 text-stone-500'}`}>2</span><span><span className="block text-lg font-bold text-ink">Checkout & payment</span><span className="mt-1 block text-xs text-stone-500">Admin approval and custom shares</span></span></button></nav>{tab === 'booking' ? <section className="space-y-6"><div className="rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm leading-6 text-amber-900"><b>Demo inventory.</b> These destination-aware flights and hotels are not live Sabre availability. Live search, IATA mapping, dates, round trips, hotel availability, and error states are the next integration step.</div><section className="rounded-[28px] border border-stone-200 bg-white p-6"><div className="flex items-center justify-between"><div><p className="eyebrow">Travel timeline</p><h2 className="mt-1 text-xl font-bold text-ink">Dates at a glance</h2></div><CalendarDays className="text-moss" /></div><div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><div className="soft-stat"><span>Outbound departure</span><strong>{departureDate}</strong><small>{flight?.departure} · {flight?.departureTime} local</small></div><div className="soft-stat"><span>Landing</span><strong>{flight?.arrivalTime}{flight?.arrivalTime.includes('+1') ? ' · next day' : ''}</strong><small>{flight?.arrival} local time</small></div><div className="soft-stat"><span>Hotel stay</span><strong>{departureDate} → {returnDate}</strong><small>Check-in 15:00 · check-out 11:00</small></div><div className="soft-stat"><span>Return flight</span><strong>{returnDate} · 16:30</strong><small>{flight?.arrival} → {flight?.departure} · demo</small></div></div><p className="mt-4 text-xs font-semibold text-moss">{nights} nights · {trip.request.duration} days · time zones shown as local airport time</p></section><section className="grid gap-6 xl:grid-cols-2"><div className="rounded-[28px] border border-stone-200 bg-white p-5"><p className="eyebrow">Flight choices</p><h2 className="mt-1 text-xl font-bold text-ink">Outbound to {trip.request.destination}</h2><div className="mt-5 space-y-3">{trip.flights.map((item) => <button disabled={busy} onClick={() => void selectFlight(item.id)} key={item.id} className={`w-full rounded-2xl border p-4 text-left ${item.selected ? 'border-moss bg-[#eff6f1]' : 'border-stone-200 hover:border-moss/40'}`}><div className="flex justify-between gap-3"><div><b className="text-ink">{item.airline} {item.code}</b><p className="mt-1 text-xs text-stone-500">{item.departure} {item.departureTime} → {item.arrival} {item.arrivalTime}</p></div><b>{money(item.price)}<small className="block text-[10px] font-normal text-stone-400">per traveler</small></b></div><p className="mt-3 text-xs text-stone-500">{item.duration} · {item.stops === 0 ? 'Nonstop' : `${item.stops} stop`}</p></button>)}</div></div><div className="rounded-[28px] border border-stone-200 bg-white p-5"><p className="eyebrow">Stay choices</p><h2 className="mt-1 text-xl font-bold text-ink">Hotels in {trip.request.destination}</h2><div className="mt-5 space-y-3">{trip.hotels.map((item) => <button disabled={busy} onClick={() => void selectHotel(item.id)} key={item.id} className={`w-full rounded-2xl border p-4 text-left ${item.selected ? 'border-moss bg-[#eff6f1]' : 'border-stone-200 hover:border-moss/40'}`}><div className="flex justify-between gap-3"><div><b className="text-ink">{item.name}</b><p className="mt-1 text-xs text-stone-500">{item.location} · ★ {item.rating}</p></div><b>{money(item.totalPrice)}<small className="block text-[10px] font-normal text-stone-400">{nights} nights · demo total</small></b></div><p className="mt-3 text-xs text-stone-500">{item.amenities.slice(0, 2).join(' · ')}</p></button>)}</div></div></section><section className="flex flex-col justify-between gap-4 rounded-[28px] bg-[#eff6f1] p-6 sm:flex-row sm:items-center"><div><p className="eyebrow text-moss">Admin confirmation</p><h2 className="mt-1 text-2xl font-bold text-ink">Ready to confirm this booking review?</h2><p className="mt-2 text-sm text-stone-600">{flight?.airline} {flight?.code} and {hotel?.name} are selected for {trip.dates}.</p></div><button onClick={continueToCheckout} className="rounded-2xl bg-moss px-5 py-3 text-sm font-bold text-white"><CheckCircle2 className="mr-2 inline" size={17} />Confirm & open payment</button></section></section> : <section className="grid gap-6 xl:grid-cols-[1fr_0.78fr]"><div className="rounded-[28px] border border-stone-200 bg-white p-6"><div className="flex items-center justify-between"><div><p className="eyebrow">Confirmed booking</p><h2 className="mt-1 text-xl font-bold text-ink">Set the group payment shares</h2></div><button onClick={() => setTab('booking')} className="text-xs font-bold text-moss">Edit booking review</button></div><div className="mt-5 flex rounded-xl bg-stone-100 p-1"><button onClick={() => setView('admin')} className={`flex-1 rounded-lg px-3 py-2 text-xs font-bold ${view === 'admin' ? 'bg-white text-ink shadow-sm' : 'text-stone-500'}`}>Admin view</button><button onClick={() => setView('traveler')} className={`flex-1 rounded-lg px-3 py-2 text-xs font-bold ${view === 'traveler' ? 'bg-white text-ink shadow-sm' : 'text-stone-500'}`}>Traveler preview</button></div>{view === 'admin' ? <div className="mt-5"><div className="flex justify-between"><b>Choose each share</b><span className={validSplit ? 'text-xs font-bold text-moss' : 'text-xs font-bold text-coral'}>{totalPercent.toFixed(2)}% of 100%</span></div><div className="mt-3 space-y-2">{trip.travelers.map((person) => <label className="flex items-center justify-between rounded-xl border border-stone-200 px-3 py-2.5" key={person.id}><span className="text-sm font-semibold">{person.name}</span><span className="flex items-center gap-2"><input type="number" min="0" max="100" step="0.01" value={shares[person.id] ?? 0} onChange={(event) => { const value = Number(event.target.value); setShares((current) => ({ ...current, [person.id]: Number.isFinite(value) ? value : 0 })); setOrder(null); }} className="w-20 rounded-lg border border-stone-200 px-2 py-1 text-right text-sm font-bold" /><b className="w-20 text-right text-sm text-moss">{money(trip.budget.spent * (shares[person.id] ?? 0) / 100)}</b></span></label>)}</div><button onClick={() => { setShares(equalShares()); setOrder(null); }} className="mt-3 text-xs font-bold text-moss">Reset equal split</button></div> : <div className="mt-5 rounded-2xl bg-[#f6fbf7] p-5"><p className="text-xs font-bold uppercase tracking-widest text-moss">What {traveler?.name} sees</p><h3 className="mt-2 text-lg font-bold">Your {trip.request.destination} invitation</h3><p className="mt-2 text-sm leading-6 text-stone-600">Your share is {money(trip.budget.spent * (shares[traveler?.id ?? ''] ?? 0) / 100)}. Other traveler amounts remain private.</p></div>}</div><aside className="rounded-[28px] bg-[#fff8e9] p-6"><p className="eyebrow text-coral">PayPal sandbox</p><h2 className="mt-1 text-2xl font-bold text-ink">Create payment requests.</h2><p className="mt-3 text-sm leading-6 text-stone-600">Demo only: the app calculates requests but does not send money, messages, or real payment links.</p>{order ? <div className="mt-5 space-y-2">{order.split.map((person) => <div className="flex justify-between border-b border-amber-200 py-2 text-sm" key={person.travelerId}><span>{person.name}</span><b>{money(person.amount)}</b></div>)}<div className="mt-4 rounded-xl bg-moss px-3 py-2.5 text-sm font-bold text-white">Checkout ready for demo</div></div> : <button disabled={!validSplit || busy || !confirmed} onClick={() => void createOrder()} className="mt-6 w-full rounded-xl bg-[#ffc439] px-4 py-3.5 text-sm font-bold text-ink disabled:opacity-40"><CreditCard className="mr-2 inline" size={16} />{busy ? 'Creating checkout...' : 'Create custom checkout'}</button>}</aside></section>}</div>;
+}
+
+function PreferenceDecision({ trip, onTrip }: { trip: Trip; onTrip: (trip: Trip, note: string) => void }) {
+  const collection = trip.preferenceCollection;
+  const [scores, setScores] = useState<Record<Interest, number>>(() => trip.groupPreference.interestScores);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { setScores(trip.groupPreference.interestScores); }, [trip.groupPreference.interestScores]);
+  if (!collection) return null;
+  const adjust = (interest: Interest, amount: number) => {
+    setScores((current) => {
+      const next = Math.min(5, Math.max(1, Number((current[interest] + amount).toFixed(2))));
+      return { ...current, [interest]: next };
+    });
+  };
+  const approve = async () => {
+    setSaving(true);
+    try {
+      const response = await api.approvePreferences(scores, trip);
+      onTrip(response.trip, 'Admin decision applied. The approved group priorities now guide the trip across every tab.');
+    } catch (error) { onTrip(trip, error instanceof Error ? error.message : 'Could not approve the group plan.'); }
+    finally { setSaving(false); }
+  };
+  return <section className="mt-6 rounded-[32px] border border-moss/20 bg-white p-6"><div className="flex flex-wrap items-start justify-between gap-4"><div><p className="eyebrow text-moss">Decision studio</p><h2 className="mt-1 text-2xl font-bold text-ink">What each traveler actually asked for.</h2><p className="mt-2 max-w-2xl text-sm leading-6 text-stone-600">Review every call, tune the final priority weights, then approve the plan. The admin’s choice is visible as an approved decision—not a hidden override.</p></div><span className={`rounded-full px-3 py-1.5 text-xs font-bold ${collection.status === 'approved' ? 'bg-emerald-100 text-moss' : 'bg-amber-100 text-amber-800'}`}>{collection.status === 'approved' ? 'Plan approved' : 'Awaiting admin decision'}</span></div><div className="mt-5 grid gap-3 md:grid-cols-3">{collection.calls.map((call) => <article className="rounded-2xl border border-stone-200 bg-[#fafbf9] p-4" key={call.travelerId}><div className="flex items-center justify-between gap-2"><p className="font-bold text-ink">{call.name}</p><span className="rounded-full bg-emerald-100 px-2 py-1 text-[10px] font-bold text-moss">{call.happiness}% happy</span></div><p className="mt-3 text-xs leading-5 text-stone-600">“{call.summary}”</p><p className="mt-3 text-[11px] font-bold uppercase tracking-wide text-stone-500">Top priorities</p><div className="mt-2 flex flex-wrap gap-1.5">{call.topPriorities.map((priority) => <span className="rounded-full bg-white px-2 py-1 text-[10px] font-bold capitalize text-ink ring-1 ring-stone-200" key={priority}>{priority}</span>)}</div><p className="mt-3 text-xs leading-5 text-stone-600"><b className="text-ink">Compromise:</b> {call.compromise}</p></article>)}</div><div className="mt-6 grid gap-5 lg:grid-cols-[1fr_0.8fr]"><div className="rounded-2xl bg-[#eff6f1] p-5"><div className="flex items-center justify-between"><div><p className="text-sm font-bold text-ink">Admin adjustment controls</p><p className="mt-1 text-xs text-stone-600">Raise or lower what the final itinerary should emphasize.</p></div><span className="text-xs font-bold text-moss">1–5 priority scale</span></div><div className="mt-4 grid gap-2 sm:grid-cols-2">{(Object.keys(scores) as Interest[]).map((interest) => <div className="flex items-center justify-between rounded-xl bg-white px-3 py-2.5" key={interest}><span className="capitalize text-sm font-semibold text-ink">{interest}</span><span className="flex items-center gap-2"><button onClick={() => adjust(interest, -0.5)} disabled={collection.status === 'approved'} className="grid h-7 w-7 place-items-center rounded-lg border border-stone-200 text-sm font-bold disabled:opacity-40">−</button><b className="w-7 text-center text-sm text-moss">{scores[interest]}</b><button onClick={() => adjust(interest, 0.5)} disabled={collection.status === 'approved'} className="grid h-7 w-7 place-items-center rounded-lg bg-moss text-sm font-bold text-white disabled:opacity-40">+</button></span></div>)}</div></div><aside className="rounded-2xl bg-[#fff8e9] p-5"><p className="eyebrow text-coral">Admin action</p><h3 className="mt-1 text-xl font-bold text-ink">{collection.status === 'approved' ? 'Plan is approved' : 'Approve & apply to trip'}</h3><p className="mt-3 text-sm leading-6 text-stone-600">This saves the agreed priority balance to the trip and records the decision in Operations center. It does not place bookings or contact anyone.</p>{collection.status === 'approved' ? <div className="mt-5 flex items-center gap-2 rounded-xl bg-moss px-3 py-2.5 text-sm font-bold text-white"><CheckCircle2 size={16} />Priorities applied to the trip</div> : <button onClick={() => void approve()} disabled={saving} className="mt-5 w-full rounded-xl bg-ink px-4 py-3 text-sm font-bold text-white disabled:opacity-60"><Sparkles className="mr-2 inline" size={16} />{saving ? 'Applying plan...' : 'Approve & apply to trip'}</button>}</aside></div></section>;
+}
+
+function MayaCallConversation({ trip, onTrip }: { trip: Trip; onTrip: (trip: Trip, note: string) => void }) {
+  const mayaCall = trip.preferenceCollection?.calls.find((call) => call.name === 'Maya');
+  const [lines, setLines] = useState<Array<{ speaker: 'JourneyOS' | 'Maya'; text: string }>>([]);
+  const [visible, setVisible] = useState(false);
+  const startedFor = useRef<string | null>(null);
+  const onTripRef = useRef(onTrip);
+  useEffect(() => { onTripRef.current = onTrip; }, [onTrip]);
+  useEffect(() => {
+    if (mayaCall?.status !== 'dialing' || startedFor.current === trip.id) return;
+    startedFor.current = trip.id;
+    setVisible(true);
+    setLines([]);
+    const script: Array<{ speaker: 'JourneyOS' | 'Maya'; text: string }> = [
+      { speaker: 'Maya', text: 'Hi.' },
+      { speaker: 'JourneyOS', text: 'Hi Maya, I’m helping your family plan Tokyo. What is the one thing you definitely want to do?' },
+      { speaker: 'Maya', text: 'I want anime shopping in Akihabara.' },
+      { speaker: 'JourneyOS', text: 'Anything you would rather avoid?' },
+      { speaker: 'Maya', text: 'Too many temples and early mornings.' },
+      { speaker: 'JourneyOS', text: 'How much walking are you comfortable with?' },
+      { speaker: 'Maya', text: 'Moderate walking is fine.' },
+    ];
+    const timers = script.map((line, index) => window.setTimeout(() => setLines((current) => [...current, line]), 900 + index * 1000));
+    const finish = window.setTimeout(() => {
+      void api.simulateMayaInterview(trip)
+        .then((response) => onTripRef.current(response.trip, response.summary))
+        .catch((error: Error) => onTripRef.current(trip, error.message));
+    }, 900 + script.length * 1000);
+    return () => { timers.forEach(window.clearTimeout); window.clearTimeout(finish); };
+  }, [mayaCall?.status, trip]);
+  if (!visible) return null;
+  const complete = mayaCall?.status === 'completed';
+  return <aside className="fixed bottom-5 left-5 z-50 w-[min(420px,calc(100vw-2.5rem))] overflow-hidden rounded-[28px] border border-violet-200 bg-white shadow-2xl"><div className="bg-violet-800 px-5 py-4 text-white"><div className="flex items-center justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[0.14em] text-violet-200">Vocal Bridge outbound call</p><h2 className="mt-1 font-bold">{complete ? 'Maya’s preferences collected' : lines.length ? 'Connected · live preference interview' : 'Calling Maya…'}</h2></div><span className="rounded-full bg-white/15 px-2.5 py-1 text-[10px] font-bold">Simulated daughter agent</span></div></div><div className="max-h-[360px] space-y-2 overflow-y-auto p-4">{lines.map((line, index) => <div key={index} className={`rounded-2xl px-3 py-2.5 text-sm leading-5 ${line.speaker === 'JourneyOS' ? 'mr-8 bg-ink text-white' : 'ml-8 bg-violet-100 text-ink'}`}><b>{line.speaker}:</b> {line.text}</div>)}{complete && <div className="mt-3 rounded-2xl bg-[#eff6f1] p-3 text-sm leading-6 text-ink"><b className="text-moss">Updated:</b> Akihabara is protected on Day 2, the early shrine moves later, and Maya’s plan fit rises from 42% to 81%.</div>}</div></aside>;
+}
+
+function PersistentVoiceAssistant({ trip, page, onTrip }: { trip: Trip; page: Page; onTrip: (trip: Trip, note: string) => void }) {
+  const activeDay = voiceActiveDay;
+  const onNavigate = voiceNavigate;
+  const onActiveDay = voiceSetActiveDay;
+  const liveVoice = useVocalBridge();
+  const { transcript } = useTranscript();
+  const { onAction, sendAction } = useAgentActions();
+  const tripRef = useRef(trip);
+  const onTripRef = useRef(onTrip);
+  const appliedBriefRef = useRef('');
+  const handledVoiceReplanRef = useRef('');
+  const [showTranscript, setShowTranscript] = useState(false);
+  const connected = liveVoice.state === 'connected' || liveVoice.state === 'connecting' || liveVoice.state === 'waiting_for_agent';
+  const micEnabled = liveVoice.isMicrophoneEnabled;
+  const pageLabel: Record<Page, string> = { home: 'Trip dashboard', planner: 'Planning', checkout: 'Booking and payment', live: 'Live trip', expenses: 'Expenses and settlement', dna: 'Travel DNA' };
+  const polishedSummary = trip.briefTranscript || `You are planning a ${trip.request.duration}-day trip from ${trip.request.origin ?? 'your origin'} to ${trip.request.destination} for ${trip.request.travelers} travelers, with a total budget of $${trip.request.budget.toLocaleString()}. Priorities include ${trip.request.interests.join(', ')}${trip.request.foodPreferences.length ? `, with ${trip.request.foodPreferences.join(', ')} food preferences` : ''}.`;
+
+  useEffect(() => { tripRef.current = trip; onTripRef.current = onTrip; }, [trip, onTrip]);
+
+  useEffect(() => {
+    if (liveVoice.state !== 'connected') return;
+    void sendAction('journeyos_context', {
+      page: pageLabel[page],
+      destination: trip.request.destination,
+      origin: trip.request.origin,
+      departureDate: trip.request.departureDate,
+      returnDate: trip.request.returnDate,
+      friends: trip.travelers.map((friend) => friend.name),
+      selectedFlight: trip.flights.find((flight) => flight.selected)?.code,
+      selectedHotel: trip.hotels.find((hotel) => hotel.selected)?.name,
+      activeDay,
+      instruction: 'This page and trip are already active. Never restart trip planning or ask for the destination again. Give concise help relevant to the current page. On Live itinerary, pass the traveler’s requested itinerary change verbatim through itinerary_command. The app already knows the selected day and resolves the requested stop, time period, completion, undo, skip, start, or delay. Do not ask for facts already listed.',
+    });
+  }, [activeDay, liveVoice.state, page, sendAction, trip]);
+
+  const applyBrief = async (brief: string) => {
+    if (brief.trim().length < 3 || appliedBriefRef.current === brief) return;
+    appliedBriefRef.current = brief;
+    try {
+      const response = await api.extractPlan(brief);
+      onTripRef.current(response.trip, 'Your spoken trip brief is now reflected across the plan, booking, and live trip.');
+    } catch (error) { onTripRef.current(tripRef.current, error instanceof Error ? error.message : 'Could not apply that voice brief.'); }
+  };
+
+  useEffect(() => onAction('trip_brief_ready', (payload) => {
+    const brief = typeof payload.conversation === 'string' ? payload.conversation : typeof payload.summary === 'string' ? payload.summary : transcript.filter((entry) => entry.role === 'user').map((entry) => entry.text).join(' ');
+    void applyBrief(brief);
+  }), [onAction, transcript]);
+
+  useEffect(() => onAction('collect_maya_preferences', () => {
+    void liveVoice.disconnect();
+    void api.callMaya(tripRef.current)
+      .then((response) => onTripRef.current(response.trip, 'JourneyOS is calling Maya’s simulated friend agent through Vocal Bridge.'))
+      .catch((error: Error) => onTripRef.current(tripRef.current, error.message));
+  }), [liveVoice, onAction]);
+
+  const applyVoiceReplan = async (type: ReplanType) => {
+    try {
+      const response = await api.replan(type, tripRef.current, activeDay);
+      onTripRef.current(response.trip, `Day ${activeDay} was replanned from your live voice update.`);
+    } catch (error) {
+      onTripRef.current(tripRef.current, error instanceof Error ? error.message : 'Could not update the live itinerary.');
+    }
+  };
+
+  const applyItineraryCommand = async (query: string) => {
+    handledVoiceReplanRef.current = query.trim();
+    try {
+      const response = await api.itineraryCommand(query, activeDay, tripRef.current);
+      onTripRef.current(response.trip, response.message);
+    } catch (error) {
+      onTripRef.current(tripRef.current, error instanceof Error ? error.message : 'Could not apply that itinerary command.');
+    }
+  };
+
+  useEffect(() => onAction('itinerary_command', (payload) => {
+    const query = typeof payload.query === 'string' ? payload.query : typeof payload.command === 'string' ? payload.command : '';
+    if (query) void applyItineraryCommand(query);
+  }), [activeDay, onAction]);
+
+  useEffect(() => onAction('replan_trip', (payload) => {
+    const requested = typeof payload.type === 'string' ? payload.type.toLowerCase() : '';
+    const type = (['tired', 'late', 'rain', 'closed', 'flight-delay'] as ReplanType[]).find((candidate) => requested.includes(candidate));
+    if (type) void applyVoiceReplan(type);
+  }), [activeDay, onAction]);
+
+  useEffect(() => onAction('navigate', (payload) => {
+    const requested = typeof payload.page === 'string' ? payload.page.trim().toLowerCase() : '';
+    const aliases: Array<[Page, string[]]> = [
+      ['home', ['home', 'dashboard', 'trip dashboard']],
+      ['planner', ['planner', 'plan', 'plan together', 'planning']],
+      ['checkout', ['checkout', 'book', 'booking', 'book and split', 'payment']],
+      ['live', ['live', 'live trip', 'live itinerary', 'itinerary']],
+      ['expenses', ['expenses', 'shared expenses', 'settlement']],
+      ['dna', ['dna', 'travel dna', 'travel memory']],
+    ];
+    const match = aliases.find(([, values]) => values.includes(requested));
+    if (match) onNavigate(match[0]);
+  }), [onAction, onNavigate]);
+
+  useEffect(() => onAction('show_booking_options', () => onNavigate('checkout')), [onAction, onNavigate]);
+
+  useEffect(() => onAction('add_traveler', (payload) => {
+    const name = typeof payload.name === 'string' ? payload.name.trim() : '';
+    const phone = typeof payload.phone === 'string' ? payload.phone.trim() : '';
+    if (name.length < 2) {
+      onTripRef.current(tripRef.current, 'JourneyOS needs the new friend\'s name before adding them.');
+      return;
+    }
+    void api.mutateTraveler({ action: 'add', name, phone }, tripRef.current)
+      .then((response) => {
+        onTripRef.current(response.trip, `${name} was added. Group totals, payment shares, and any prior Sabre result were reset for the new traveler count.`);
+        onNavigate('planner');
+      })
+      .catch((error: Error) => onTripRef.current(tripRef.current, error.message));
+  }), [onAction, onNavigate]);
+
+  useEffect(() => onAction('show_day', (payload) => {
+    const requested = Number(payload.day);
+    if (!Number.isInteger(requested) || requested < 1 || requested > tripRef.current.request.duration) return;
+    onActiveDay(requested);
+    onNavigate('live');
+    onTripRef.current(tripRef.current, `Day ${requested} is now active for the map, timeline, and voice updates.`);
+  }), [onAction, onActiveDay, onNavigate]);
+
+  useEffect(() => {
+    if (page !== 'live') return;
+    const latest = [...transcript].reverse().find((entry) => entry.role === 'user')?.text.trim();
+    if (!latest || handledVoiceReplanRef.current === latest) return;
+    const spoken = latest.toLowerCase();
+    if (!/\b(complete|completed|done|finished|saw|visited|undo|restore|reopen|start|begin|arrived|cancel|skip|remove|drop|late|delay|delayed|behind|stuck)\b/.test(spoken)) return;
+    handledVoiceReplanRef.current = latest;
+    void applyItineraryCommand(latest);
+  }, [activeDay, page, transcript]);
+
+  const toggle = async () => {
+    try {
+      // Keep one conversation alive as the user moves between pages. A second
+      // press only mutes/unmutes; ending a session is an explicit action.
+      if (connected) await liveVoice.toggleMicrophone();
+      else await liveVoice.connect();
+    } catch (error) { onTripRef.current(tripRef.current, error instanceof Error ? error.message : 'Could not connect to the Travel Mediator.'); }
+  };
+
+  if (page === 'planner') return null;
+  return <aside className="fixed bottom-5 right-5 z-[60] flex items-center gap-3 rounded-2xl border border-moss/20 bg-white p-3 shadow-xl">
+    {showTranscript && <div className="absolute bottom-[calc(100%+12px)] right-0 w-[min(420px,calc(100vw-2.5rem))] overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-2xl"><div className="flex items-center justify-between bg-ink px-4 py-3 text-white"><div><p className="text-[10px] font-bold uppercase tracking-wider text-emerald-200">Live mediator transcript</p><p className="mt-1 text-sm font-bold">Your conversation</p></div><button onClick={() => setShowTranscript(false)} className="text-xs font-bold text-white/70 hover:text-white">Close</button></div><div className="max-h-64 space-y-2 overflow-y-auto p-4">{transcript.length ? transcript.slice(-12).map((entry, index) => <div key={`${entry.role}-${index}`} className={`rounded-xl px-3 py-2 text-xs leading-5 ${entry.role === 'user' ? 'ml-8 bg-[#eff6f1] text-ink' : 'mr-8 bg-stone-100 text-stone-700'}`}><b>{entry.role === 'user' ? 'You' : 'JourneyOS'}:</b> {entry.text}</div>) : <p className="text-sm text-stone-500">Start talking to the Travel Mediator and your live transcript will appear here.</p>}</div><div className="border-t border-stone-100 bg-[#fff8e9] p-4"><p className="text-[10px] font-extrabold uppercase tracking-wider text-coral">Trip brief summary</p><p className="mt-2 text-sm leading-6 text-ink">{polishedSummary}</p></div></div>}
+    <div className="hidden max-w-[220px] sm:block"><p className="text-[10px] font-bold uppercase tracking-wider text-moss">JourneyOS voice</p><p className="mt-0.5 text-xs font-semibold text-ink">{page === 'live' ? `Controlling Day ${activeDay} · Vocal Bridge` : `Ready on ${pageLabel[page]} · Vocal Bridge`}</p>{liveVoice.error && <p className="mt-1 text-[10px] font-semibold text-coral">{liveVoice.error.message}</p>}</div>
+    <button onClick={() => setShowTranscript((current) => !current)} className="rounded-lg px-2 py-1 text-[10px] font-bold text-moss hover:bg-[#eff6f1]">Transcript</button>
+    {connected && <button onClick={() => void liveVoice.disconnect()} aria-label="End JourneyOS voice call" className="rounded-lg px-2 py-1 text-[10px] font-bold text-stone-500 hover:bg-stone-100">End call</button>}
+    <button onClick={() => void toggle()} aria-label={connected ? (micEnabled ? 'Mute JourneyOS microphone' : 'Unmute JourneyOS microphone') : 'Talk to JourneyOS'} className={`grid h-12 w-12 place-items-center rounded-xl text-white transition ${connected && micEnabled ? 'animate-pulse bg-coral' : 'bg-moss hover:bg-ink'}`}><Mic size={20} /></button>
+  </aside>;
+}
+
 function App() {
+  const { clear: clearVoiceTranscript } = useTranscript();
   const [trip, setTrip] = useState<Trip | null>(null);
   const [page, setPage] = useState<Page>('home');
-  const [activeDay, setActiveDay] = useState(2);
+  const [activeDay, setActiveDay] = useState(1);
   const [notice, setNotice] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  voiceActiveDay = activeDay;
+  voiceNavigate = setPage;
+  voiceSetActiveDay = setActiveDay;
 
-  useEffect(() => { void api.getDemo().then(({ trip: seeded }) => setTrip(seeded)).catch((error: Error) => setNotice(`Could not reach the JourneyOS API: ${error.message}`)); }, []);
-  const onTrip = (updated: Trip, message: string) => { setTrip(updated); setNotice(message); window.setTimeout(() => setNotice(null), 4200); };
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const paypalStatus = params.get('paypal');
+    if (!['approved', 'cancelled'].includes(paypalStatus ?? '') || !window.opener) return;
+    window.opener.postMessage({ type: 'journeyos-paypal-return', status: paypalStatus, token: params.get('token') }, window.location.origin);
+    window.close();
+  }, []);
+
+  useEffect(() => {
+    const saved = window.localStorage.getItem('journeyos-active-trip');
+    if (!saved) { void api.getDemo().then(({ trip: seeded }) => setTrip(seeded)).catch((error: Error) => setNotice(`Could not reach the JourneyOS API: ${error.message}`)); return; }
+    try { void api.hydrateTrip(JSON.parse(saved) as Trip).then(({ trip: restored }) => setTrip(restored)).catch((error: Error) => setNotice(`Could not restore your active trip: ${error.message}`)); }
+    catch { window.localStorage.removeItem('journeyos-active-trip'); void api.getDemo().then(({ trip: seeded }) => setTrip(seeded)); }
+  }, []);
+
+  // Voice calls finish outside the browser. While one is active, periodically
+  // pull the secure server-side callback result into the visible friend cards.
+  useEffect(() => {
+    const hasActivePreferenceCall = trip?.preferenceCollection?.calls.some((call) => ['queued', 'dialing', 'connected'].includes(call.status));
+    if (!hasActivePreferenceCall) return;
+    let disposed = false;
+    const syncPreferenceCalls = async () => {
+      try {
+        const remote = await api.getDemo();
+        if (disposed) return;
+        const localCalls = JSON.stringify(trip?.preferenceCollection?.calls ?? []);
+        const remoteCalls = JSON.stringify(remote.trip.preferenceCollection?.calls ?? []);
+        if (localCalls !== remoteCalls) {
+          setTrip(remote.trip);
+          window.localStorage.setItem('journeyos-active-trip', JSON.stringify(remote.trip));
+          setNotice('A friend preference call was updated.');
+        }
+      } catch { /* keep the current UI if the local API is temporarily unavailable */ }
+    };
+    void syncPreferenceCalls();
+    const interval = window.setInterval(() => void syncPreferenceCalls(), 3000);
+    return () => { disposed = true; window.clearInterval(interval); };
+  }, [trip?.preferenceCollection?.calls]);
+  const onTrip = (updated: Trip, message: string) => { setTrip(updated); window.localStorage.setItem('journeyos-active-trip', JSON.stringify(updated)); setNotice(message); window.setTimeout(() => setNotice(null), 4200); };
+  useEffect(() => {
+    const handleProgress = (event: Event) => {
+      const detail = (event as CustomEvent<{ id: string; title: string; action: 'complete' | 'restore' }>).detail;
+      if (!detail || !trip) return;
+      void api.progressStop(detail.action, trip, { id: detail.id })
+        .then((response) => onTrip(response.trip, detail.action === 'complete' ? `${detail.title} marked complete. Use Undo done to restore it.` : `${detail.title} restored to the itinerary.`))
+        .catch((error: Error) => setNotice(error.message));
+    };
+    window.addEventListener('journeyos-progress', handleProgress);
+    return () => window.removeEventListener('journeyos-progress', handleProgress);
+  }, [trip]);
   const title = useMemo(() => nav.find((item) => item.id === page)?.label ?? 'JourneyOS', [page]);
-  const scanReceipt = async () => { if (!trip) return; try { const response = await api.scanReceipt(); onTrip(response.trip, `${response.receipt.restaurant} receipt scanned — ${money(response.receipt.amount)} added to live spend.`); } catch (error) { setNotice(error instanceof Error ? error.message : 'Could not scan receipt.'); } };
+  const hasTripBrief = Boolean(trip?.briefTranscript);
+  const resetDemo = async () => { try { const response = await api.resetTrip(); clearVoiceTranscript(); setActiveDay(1); onTrip(response.trip, 'Demo reset to the deterministic Japan starting state.'); } catch (error) { setNotice(error instanceof Error ? error.message : 'Could not reset the demo.'); } };
+  const scanReceipt = async () => { if (!trip) return; try { const response = await api.scanReceipt(trip); onTrip(response.trip, `${response.receipt.restaurant} receipt scanned — ${money(response.receipt.amount)} added to live spend.`); } catch (error) { setNotice(error instanceof Error ? error.message : 'Could not scan receipt.'); } };
   if (!trip) return <main className="grid min-h-screen place-items-center bg-cream"><div className="text-center"><div className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-moss text-white animate-pulse"><Sparkles /></div><p className="mt-4 text-sm font-bold text-ink">Opening your journey…</p></div></main>;
-  const content = page === 'home' ? <><TripOverview trip={trip} setPage={setPage} activeDay={activeDay} setActiveDay={setActiveDay} onReceipt={() => void scanReceipt()} /><div className="mt-6"><TravelerProfiles trip={trip} /></div></> : page === 'planner' ? <VoicePlanner trip={trip} onTrip={onTrip} setPage={setPage} /> : page === 'agents' ? <AgentNetwork /> : page === 'map' ? <JourneyMap trip={trip} activeDay={activeDay} setActiveDay={setActiveDay} /> : page === 'operations' ? <OperationsCenter trip={trip} onTrip={onTrip} /> : <BookingCheckout trip={trip} onTrip={onTrip} />;
-  return <div className="min-h-screen bg-cream text-ink"><aside className="fixed inset-y-0 left-0 z-40 hidden w-[248px] flex-col border-r border-stone-200 bg-white px-5 py-6 lg:flex"><div className="flex items-center gap-3 px-2"><span className="grid h-10 w-10 place-items-center rounded-2xl bg-ink text-lg font-bold text-white">J</span><div><p className="font-display text-2xl leading-none text-ink">JourneyOS</p><p className="mt-1 text-[10px] font-bold uppercase tracking-[0.16em] text-moss">Travel, arranged.</p></div></div><nav className="mt-10 space-y-1">{nav.map(({ id, label, icon: Icon }) => <button key={id} onClick={() => setPage(id)} className={`flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-semibold transition ${page === id ? 'bg-[#eff6f1] text-moss' : 'text-stone-500 hover:bg-stone-50 hover:text-ink'}`}><Icon size={18} />{label}</button>)}</nav><div className="mt-auto rounded-2xl bg-ink p-4 text-white"><p className="text-xs font-bold">Your travel DNA is learning.</p><p className="mt-2 text-xs leading-5 text-white/60">Each choice makes the next trip feel more like you.</p><div className="mt-3 flex items-center gap-1.5"><Sparkles size={14} className="text-amber-300" /><span className="text-xs font-bold text-amber-100">Culture-forward</span></div></div></aside><header className="sticky top-0 z-30 border-b border-stone-200 bg-cream/90 px-5 py-4 backdrop-blur lg:ml-[248px] lg:px-9"><div className="mx-auto flex max-w-[1400px] items-center justify-between"><div className="flex items-center gap-3"><button onClick={() => setMenuOpen(!menuOpen)} className="grid h-9 w-9 place-items-center rounded-xl bg-white text-ink ring-1 ring-stone-200 lg:hidden"><Map size={17} /></button><div><p className="text-[10px] font-bold uppercase tracking-[0.14em] text-stone-400">{trip.dates}</p><h2 className="text-sm font-bold text-ink">{title}</h2></div></div><div className="flex items-center gap-2"><button type="button" onClick={() => setPage('agents')} className="hidden items-center gap-2 rounded-full bg-[#eff6f1] px-3 py-1.5 text-xs font-bold text-moss ring-1 ring-moss/10 transition hover:bg-[#e4f0e7] sm:inline-flex"><Bot size={14} /> 7 agents</button><span className="hidden rounded-full bg-white px-3 py-1.5 text-xs font-semibold text-stone-500 ring-1 ring-stone-200 md:inline-flex">4 travelers</span><span className="grid h-9 w-9 place-items-center rounded-full bg-coral text-xs font-bold text-white">AY</span></div></div>{menuOpen && <div className="mx-auto mt-4 max-w-[1400px] rounded-2xl bg-white p-2 shadow-lg ring-1 ring-stone-200 lg:hidden">{nav.map(({ id, label, icon: Icon }) => <button onClick={() => { setPage(id); setMenuOpen(false); }} className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm font-semibold ${page === id ? 'bg-[#eff6f1] text-moss' : 'text-stone-600'}`} key={id}><Icon size={17} />{label}</button>)}</div>}</header><main className="px-5 py-7 lg:ml-[248px] lg:px-9"><div className="mx-auto max-w-[1400px]">{content}</div></main>{notice && <div className="fixed bottom-5 right-5 z-50 max-w-sm rounded-2xl bg-ink px-4 py-3 text-sm font-semibold text-white shadow-2xl"><div className="flex items-start gap-2"><CheckCircle2 className="mt-0.5 shrink-0 text-[#8fe0b7]" size={17} /><span>{notice}</span></div></div>}</div>;
+  const content = page === 'home' ? <><TripOverview trip={trip} setPage={setPage} activeDay={activeDay} setActiveDay={setActiveDay} onReceipt={() => void scanReceipt()} onReset={() => void resetDemo()} />{hasTripBrief && <div className="mt-6"><TravelerFitOverview trip={trip} /></div>}</> : page === 'planner' ? <><VoicePlanner trip={trip} onTrip={onTrip} /><NegotiationExperience trip={trip} onTrip={onTrip} /><DecisionStudio trip={trip} onTrip={onTrip} /></> : page === 'checkout' ? <BookingExperience trip={trip} onTrip={onTrip} /> : page === 'live' ? <><JourneyMap trip={trip} activeDay={activeDay} setActiveDay={setActiveDay} /><DisruptionDemo trip={trip} activeDay={activeDay} onTrip={onTrip} /><MapOptimizationPanel trip={trip} activeDay={activeDay} onTrip={onTrip} /></> : page === 'expenses' ? <ExpenseLedger trip={trip} onTrip={onTrip} /> : <TravelDnaPanel trip={trip} />;
+  return <div className="min-h-screen bg-cream text-ink"><aside className="fixed inset-y-0 left-0 z-40 hidden w-[248px] flex-col border-r border-stone-200 bg-white px-5 py-6 lg:flex"><div className="flex items-center gap-3 px-2"><span className="grid h-10 w-10 place-items-center rounded-2xl bg-ink text-lg font-bold text-white">J</span><div><p className="font-display text-2xl leading-none text-ink">JourneyOS</p><p className="mt-1 text-[10px] font-bold uppercase tracking-[0.16em] text-moss">Travel, arranged.</p></div></div><nav className="mt-10 space-y-1">{nav.map(({ id, label, icon: Icon }) => <button key={id} onClick={() => setPage(id)} className={`flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-semibold transition ${page === id ? 'bg-[#eff6f1] text-moss' : 'text-stone-500 hover:bg-stone-50 hover:text-ink'}`}><Icon size={18} />{label}</button>)}</nav><div className="mt-auto rounded-2xl bg-ink p-4 text-white"><p className="text-xs font-bold">Your travel DNA is learning.</p><p className="mt-2 text-xs leading-5 text-white/60">Each choice makes the next trip feel more like you.</p><div className="mt-3 flex items-center gap-1.5"><Sparkles size={14} className="text-amber-300" /><span className="text-xs font-bold text-amber-100">Culture-forward</span></div></div></aside><header className="sticky top-0 z-30 border-b border-stone-200 bg-cream/90 px-5 py-4 backdrop-blur lg:ml-[248px] lg:px-9"><div className="mx-auto flex max-w-[1400px] items-center justify-between"><div className="flex items-center gap-3"><button onClick={() => setMenuOpen(!menuOpen)} className="grid h-9 w-9 place-items-center rounded-xl bg-white text-ink ring-1 ring-stone-200 lg:hidden"><Map size={17} /></button><div><p className="text-[10px] font-bold uppercase tracking-[0.14em] text-stone-400">{hasTripBrief ? trip.dates : 'Trip brief needed'}</p><h2 className="text-sm font-bold text-ink">{title}</h2></div></div><div className="flex items-center gap-2"><span className="hidden rounded-full bg-white px-3 py-1.5 text-xs font-semibold text-stone-500 ring-1 ring-stone-200 sm:inline-flex">{hasTripBrief ? `${trip.travelers.length} friends` : 'No friends added yet'}</span><span className="grid h-9 w-9 place-items-center rounded-full bg-coral text-xs font-bold text-white">AY</span></div></div>{menuOpen && <div className="mx-auto mt-4 max-w-[1400px] rounded-2xl bg-white p-2 shadow-lg ring-1 ring-stone-200 lg:hidden">{nav.map(({ id, label, icon: Icon }) => <button onClick={() => { setPage(id); setMenuOpen(false); }} className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm font-semibold ${page === id ? 'bg-[#eff6f1] text-moss' : 'text-stone-600'}`} key={id}><Icon size={17} />{label}</button>)}</div>}</header><main className="px-5 py-7 lg:ml-[248px] lg:px-9"><div className="mx-auto max-w-[1400px]">{content}</div></main><PersistentVoiceAssistant trip={trip} page={page} onTrip={onTrip} /><MayaCallConversation trip={trip} onTrip={onTrip} />{notice && <div className="fixed bottom-24 right-5 z-50 max-w-sm rounded-2xl bg-ink px-4 py-3 text-sm font-semibold text-white shadow-2xl"><div className="flex items-start gap-2"><CheckCircle2 className="mt-0.5 shrink-0 text-[#8fe0b7]" size={17} /><span>{notice}</span></div></div>}</div>;
 }
 
 export default App;

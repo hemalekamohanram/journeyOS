@@ -3,13 +3,12 @@ import type { Flight, Hotel } from '../types.js';
 
 export class SabreService {
   private cachedToken?: { value: string; expiresAt: number };
-  private tokenRequest?: Promise<string>;
 
   constructor(private readonly fixtures: { flights: Flight[]; hotels: Hotel[] }) {}
 
   async searchFlights(params: { origin?: string; destination?: string; departureDate?: string }): Promise<Flight[]> {
-    if (config.mockMode || !config.sabre.eprUsername || !config.sabre.eprPassword) return this.fixtures.flights;
-    const token = await this.token();
+    if (!this.hasCredentials()) return this.fixtures.flights;
+    const token = await this.accessToken();
     const search = new URLSearchParams({ originLocationCode: params.origin ?? 'SFO', destinationLocationCode: params.destination ?? 'TYO', departureDate: params.departureDate ?? '2026-10-12', adults: '4', currencyCode: 'USD', max: '6' });
     const response = await fetch(`${config.sabre.baseUrl}/v2/shop/flights?${search}`, { headers: { Authorization: `Bearer ${token}` } });
     if (!response.ok) throw new Error(`Sabre flight search returned ${response.status}`);
@@ -18,10 +17,10 @@ export class SabreService {
   }
 
   async searchHotels(params: { cityCode?: string; checkInDate?: string; checkOutDate?: string }): Promise<Hotel[]> {
-    if (config.mockMode || !config.sabre.eprUsername || !config.sabre.eprPassword) return this.fixtures.hotels;
+    if (!this.hasCredentials()) return this.fixtures.hotels;
     // Sabre hotel endpoints vary by contracted API package. Keep this call isolated
     // and normalize the shared output before UI consumption.
-    const token = await this.token();
+    const token = await this.accessToken();
     const query = new URLSearchParams({ cityCode: params.cityCode ?? 'TYO', checkInDate: params.checkInDate ?? '2026-10-12', checkOutDate: params.checkOutDate ?? '2026-10-15' });
     const response = await fetch(`${config.sabre.baseUrl}/v1.0.0/shop/hotels?${query}`, { headers: { Authorization: `Bearer ${token}` } });
     if (!response.ok) throw new Error(`Sabre hotel search returned ${response.status}`);
@@ -29,36 +28,40 @@ export class SabreService {
     return (body.Hotels ?? []).map((hotel, index) => this.normalizeHotel(hotel, index));
   }
 
-  private async token(): Promise<string> {
-    // Sabre OAuth returns a short-lived bearer token. Reuse it until
-    // one minute before expiry, then regenerate it server-side.
-    if (this.cachedToken && this.cachedToken.expiresAt > Date.now()) return this.cachedToken.value;
-    if (this.tokenRequest) return this.tokenRequest;
-
-    this.tokenRequest = this.createToken().finally(() => {
-      this.tokenRequest = undefined;
-    });
-    return this.tokenRequest;
-  }
-
-  private async createToken(): Promise<string> {
-    // Sabre OAuth v2 expects each credential to be Base64 encoded before the
-    // combined client-id:client-secret value is encoded for HTTP Basic auth.
-    const username = Buffer.from(String(config.sabre.eprUsername), 'utf8').toString('base64');
-    const password = Buffer.from(String(config.sabre.eprPassword), 'utf8').toString('base64');
-    const basicAuth = Buffer.from(`${username}:${password}`, 'utf8').toString('base64');
-    const response = await fetch(`${config.sabre.baseUrl}/${config.sabre.oauthVersion}/auth/token`, {
+  async accessToken(): Promise<string> {
+    if (config.sabre.accessToken) return config.sabre.accessToken;
+    if (this.cachedToken && this.cachedToken.expiresAt > Date.now() + 30_000) return this.cachedToken.value;
+    if (!this.hasCredentials()) throw new Error('Sabre CERT credentials are not configured on the server.');
+    const authorization = config.sabre.authVersion === 'v2'
+      ? this.v2Authorization()
+      : `Basic ${Buffer.from(`${config.sabre.clientId}:${config.sabre.clientSecret}`).toString('base64')}`;
+    const response = await fetch(`${config.sabre.baseUrl}/v2/auth/token`, {
       method: 'POST',
-      headers: { Authorization: `Basic ${basicAuth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+      headers: { Authorization: authorization, 'Content-Type': 'application/x-www-form-urlencoded' },
       body: 'grant_type=client_credentials',
     });
     if (!response.ok) throw new Error(`Sabre authorization returned ${response.status}`);
-    const body = await response.json() as { access_token?: string; expires_in?: number | string };
-    if (!body.access_token) throw new Error('Sabre authorization response did not include an access token');
-    const expiresInSeconds = Number(body.expires_in ?? 300);
-    const refreshAfterSeconds = Math.max(5, expiresInSeconds - 60);
-    this.cachedToken = { value: body.access_token, expiresAt: Date.now() + refreshAfterSeconds * 1_000 };
+    const body = await response.json() as { access_token: string; expires_in?: number };
+    this.cachedToken = { value: body.access_token, expiresAt: Date.now() + Math.max(60, body.expires_in ?? 600) * 1000 };
     return body.access_token;
+  }
+
+  private hasCredentials(): boolean {
+    if (config.mockMode) return false;
+    return config.sabre.authVersion === 'v2'
+      ? Boolean(config.sabre.v2UserId && config.sabre.v2Password)
+      : Boolean(config.sabre.clientId && config.sabre.clientSecret);
+  }
+
+  private v2Authorization(): string {
+    if (!config.sabre.v2UserId || !config.sabre.v2Password) throw new Error('Sabre v2 User ID and password are required');
+    const parts = config.sabre.v2UserId.split(':');
+    const identity = parts.length === 4
+      ? `${parts[0]}:${parts[1]}:${config.sabre.v2Pcc}:${config.sabre.v2Domain}`
+      : `V1:${config.sabre.v2UserId}:${config.sabre.v2Pcc}:${config.sabre.v2Domain}`;
+    const encodedIdentity = Buffer.from(identity).toString('base64');
+    const encodedPassword = Buffer.from(config.sabre.v2Password).toString('base64');
+    return `Basic ${Buffer.from(`${encodedIdentity}:${encodedPassword}`).toString('base64')}`;
   }
 
   private normalizeFlight(offer: Record<string, unknown>, index: number): Flight {

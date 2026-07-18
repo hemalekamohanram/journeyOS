@@ -1,6 +1,8 @@
 node_modules
+.npm-cache
 dist
 .env
+.env.local
 *.db
 .DS_Store
 outputs/
