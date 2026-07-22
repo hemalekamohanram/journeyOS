@@ -62,6 +62,16 @@ export class SabreMcpService {
     return this.tool('create-booking', { ...payload, targetPcc: config.sabre.pcc, conversationId });
   }
 
+  /**
+   * The Skills MCP server returns opaque offer/rate data. Its search response
+   * is the authoritative CERT freshness check, so this deliberately runs a
+   * new search rather than attempting to reconstruct an offer from display
+   * fields in the browser.
+   */
+  async revalidateTrip(input: { origin: string; destination: string; departureDate: string; returnDate: string; adults: number }): Promise<SabreLiveSearch> {
+    return this.searchTrip(input);
+  }
+
   private async beginConversation(): Promise<string> {
     await this.call('initialize', { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'journeyos', version: '0.1.0' } });
     const guide = await this.tool('use-sabre-mcp-server-guidelines', {});
@@ -90,7 +100,12 @@ export class SabreMcpService {
       body: JSON.stringify({ jsonrpc: '2.0', id: ++this.requestId, method, params }),
     });
     const body = await response.json().catch(() => ({})) as JsonRpcResponse;
-    if (!response.ok || body.error) throw new Error(body.error?.message ?? `Sabre MCP returned ${response.status}`);
+    if (!response.ok || body.error) {
+      if (response.status === 401) {
+        throw new Error('Sabre MCP authentication failed (401). Refresh SABRE_ACCESS_TOKEN with a current OAuth 2.0 CERT token and restart the server. The MCP URL and PCC can remain unchanged.');
+      }
+      throw new Error(body.error?.message ?? `Sabre MCP returned ${response.status}`);
+    }
     return body;
   }
 

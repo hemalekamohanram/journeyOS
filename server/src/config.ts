@@ -17,11 +17,11 @@ export const config = {
   clientOrigin: process.env.CLIENT_ORIGIN ?? 'http://localhost:5173',
   mockMode: bool(process.env.MOCK_MODE, true),
   sabre: {
-    authVersion: process.env.SABRE_AUTH_VERSION ?? 'v3',
+    authVersion: process.env.SABRE_AUTH_VERSION ?? process.env.SABRE_OAUTH_VERSION ?? 'v3',
     clientId: process.env.SABRE_CLIENT_ID,
     clientSecret: process.env.SABRE_CLIENT_SECRET,
-    v2UserId: process.env.SABRE_V2_USER_ID ?? process.env.SABRE_EPR_USERNAME,
-    v2Password: process.env.SABRE_V2_PASSWORD ?? process.env.SABRE_EPR_PASSWORD,
+    v2UserId: process.env.SABRE_V2_USER_ID ?? process.env.SABRE_EPR_USERNAME ?? process.env.SABRE_CLIENT_ID,
+    v2Password: process.env.SABRE_V2_PASSWORD ?? process.env.SABRE_EPR_PASSWORD ?? process.env.SABRE_CLIENT_SECRET,
     v2Pcc: process.env.SABRE_V2_PCC ?? 'S5OM',
     v2Domain: process.env.SABRE_V2_DOMAIN ?? 'EXT',
     baseUrl: process.env.SABRE_BASE_URL ?? 'https://api.cert.platform.sabre.com',
@@ -36,9 +36,12 @@ export const config = {
   },
   vocalBridge: {
     apiKey: process.env.VOCAL_BRIDGE_API_KEY,
+    bookingApiKey: process.env.VOCAL_BRIDGE_BOOKING_AGENT_API_KEY,
     mayaApiKey: process.env.VOCAL_BRIDGE_MAYA_API_KEY,
     baseUrl: process.env.VOCAL_BRIDGE_API_URL ?? process.env.VOCAL_BRIDGE_BASE_URL,
     agentId: process.env.VOCAL_BRIDGE_AGENT_ID,
+    bookingAgentId: process.env.VOCAL_BRIDGE_BOOKING_AGENT_ID,
+    bookingAgentPhone: process.env.VOCAL_BRIDGE_BOOKING_AGENT_PHONE,
     mayaAgentId: process.env.VOCAL_BRIDGE_MAYA_AGENT_ID ?? '8461e8c8-6b94-42c7-bc4b-dbe48d25e700',
     mayaPhone: process.env.VOCAL_BRIDGE_MAYA_PHONE ?? '+12403781801',
     // Prefer the documented outbound callback secret name. Keep the original
